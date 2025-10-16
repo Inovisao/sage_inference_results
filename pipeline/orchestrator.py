@@ -1,0 +1,207 @@
+from __future__ import annotations
+
+import re
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
+
+import cv2
+
+from .coco_utils import build_image_lookup_by_stem, extract_original_images, load_coco_json, save_coco_json
+from .data_prep import build_tile_index, discover_fold_directories, prepare_original_test_split
+from .detectors import BaseDetector, resolve_detector
+from .reconstruction import build_prediction_dataset
+from .types import DetectionRecord, ModelWeights, OriginalImage, SuppressionParams
+
+_WEIGHT_SUFFIXES = {".pt", ".pth", ".onnx"}
+_FOLD_REGEX = re.compile(r"fold[_\-]?(\d+)", re.IGNORECASE)
+
+
+@dataclass
+class PipelineSettings:
+    dataset_root: Path
+    models_root: Path
+    results_root: Path
+    originals_root: Path
+    suppression: SuppressionParams = field(default_factory=SuppressionParams)
+    create_mosaics: bool = False
+    detection_thresholds: Mapping[str, float] = field(default_factory=dict)
+    model_class_offsets: Mapping[str, int] = field(default_factory=dict)
+
+
+class SageInferencePipeline:
+    """
+    Coordinates the full pipeline:
+        1. Descobre folds/tiles
+        2. Identifica imagens originais de teste e filtra COCO
+        3. Executa inferência patch-a-patch por modelo/peso
+        4. Reprojeta, aplica supressão híbrida e salva COCO reconstruído
+    """
+
+    def __init__(self, settings: PipelineSettings):
+        self.settings = settings
+        self.dataset_root = settings.dataset_root
+        self.models_root = settings.models_root
+        self.results_root = settings.results_root
+        self.originals_root = settings.originals_root
+        self.suppression = settings.suppression
+        self.create_mosaics = settings.create_mosaics
+        self.detection_thresholds = {k.lower(): v for k, v in settings.detection_thresholds.items()}
+        self.model_class_offsets = {k.lower(): v for k, v in settings.model_class_offsets.items()}
+
+        self.detection_thresholds.setdefault("yolov8", 0.25)
+        self.detection_thresholds.setdefault("yolov5_tph", 0.25)
+        self.detection_thresholds.setdefault("faster", 0.5)
+        self.detection_thresholds.setdefault("fasterrcnn", 0.5)
+
+        self.model_class_offsets.setdefault("yolov8", 1)
+        self.model_class_offsets.setdefault("yolov5_tph", 0)
+        self.model_class_offsets.setdefault("faster", 0)
+        self.model_class_offsets.setdefault("fasterrcnn", 0)
+
+        self.train_coco_path = self.dataset_root / "train" / "_annotations.coco.json"
+        self.train_images_dir = self.dataset_root / "train"
+        self.tiles_root = self.dataset_root / "tiles"
+
+        if not self.train_coco_path.exists():
+            raise FileNotFoundError(f"Ground-truth COCO not found at {self.train_coco_path}")
+        if not self.tiles_root.exists():
+            raise FileNotFoundError(f"Tiles root not found at {self.tiles_root}")
+
+        self.train_coco = load_coco_json(self.train_coco_path)
+        self.original_images = extract_original_images(self.train_coco)
+        self.original_images_by_stem = build_image_lookup_by_stem(self.original_images)
+
+        self.categories = self.train_coco.get("categories", [])
+        self.num_classes = self._infer_num_classes(self.categories)
+
+    @staticmethod
+    def _infer_num_classes(categories: Sequence[Mapping[str, object]]) -> int:
+        if not categories:
+            return 1
+        ids = [int(cat["id"]) for cat in categories]
+        return max(ids) + 1
+
+    def _discover_model_weights(self) -> List[ModelWeights]:
+        weights: List[ModelWeights] = []
+        if not self.models_root.exists():
+            print(f"[WARN] Models directory '{self.models_root}' not found. Skipping inference.")
+            return weights
+
+        for model_dir in sorted(self.models_root.iterdir()):
+            if not model_dir.is_dir():
+                continue
+            spec = ModelWeights(name=model_dir.name)
+            for weight_path in sorted(model_dir.rglob("*")):
+                if not weight_path.is_file():
+                    continue
+                if weight_path.suffix.lower() not in _WEIGHT_SUFFIXES:
+                    continue
+                match = _FOLD_REGEX.search(weight_path.stem)
+                if not match:
+                    continue
+                fold_idx = int(match.group(1))
+                if fold_idx in spec.fold_to_path:
+                    print(
+                        f"[WARN] Model '{model_dir.name}' already has a weight for fold {fold_idx}. "
+                        f"Keeping existing path '{spec.fold_to_path[fold_idx]}' and skipping '{weight_path}'."
+                    )
+                    continue
+                spec.fold_to_path[fold_idx] = weight_path
+            if spec.fold_to_path:
+                weights.append(spec)
+        return weights
+
+    def _instantiate_detector(self, model_name: str, weight_path: Path) -> BaseDetector:
+        detector_cls = resolve_detector(model_name)
+        key = model_name.lower()
+        class_offset = self.model_class_offsets.get(key, 0)
+        extra_kwargs = {}
+        if detector_cls.model_name in {"faster", "fasterrcnn"}:
+            extra_kwargs["num_classes"] = self.num_classes
+        detector = detector_cls(
+            weight_path,
+            class_id_offset=class_offset,
+            **extra_kwargs,
+        )
+        return detector
+
+    def run(self) -> None:
+        folds = discover_fold_directories(self.tiles_root)
+        if not folds:
+            print(f"[WARN] No folds discovered under '{self.tiles_root}'.")
+            return
+
+        model_specs = self._discover_model_weights()
+        if not model_specs:
+            print("[WARN] No model weights discovered. Run will only prepare original test splits.")
+
+        for fold_dir in folds:
+            match = _FOLD_REGEX.match(fold_dir.name)
+            if not match:
+                continue
+            fold_idx = int(match.group(1))
+            print(f"\n[INFO] Processing {fold_dir.name} (fold {fold_idx})")
+
+            test_dir = fold_dir / "test"
+            tile_index, original_to_tiles = build_tile_index(test_dir, self.original_images_by_stem)
+            originals_output_dir = self.originals_root / f"fold{fold_idx}"
+            annotations_path = prepare_original_test_split(
+                self.train_coco,
+                original_to_tiles,
+                output_dir=originals_output_dir,
+                source_images_dir=self.train_images_dir,
+            )
+            filtered_coco = load_coco_json(annotations_path)
+
+            if not model_specs:
+                continue
+
+            for spec in model_specs:
+                weight_path = spec.get(fold_idx)
+                if weight_path is None:
+                    print(f"[WARN] Model '{spec.name}' has no weight for fold {fold_idx}. Skipping.")
+                    continue
+
+                print(f"[INFO]  └─ Running model '{spec.name}' with weights '{weight_path.name}'")
+                start_time = time.time()
+                try:
+                    detector = self._instantiate_detector(spec.name, weight_path)
+                except Exception as exc:
+                    print(f"[ERROR] Failed to instantiate detector '{spec.name}': {exc}")
+                    continue
+
+                tile_predictions: MutableMapping[str, Sequence[DetectionRecord]] = {}
+                for tile_name, metadata in tile_index.items():
+                    image = cv2.imread(str(metadata.path))
+                    if image is None:
+                        raise FileNotFoundError(f"Unable to read tile image '{metadata.path}'.")
+                    threshold = self.detection_thresholds.get(spec.name.lower(), detector.default_threshold)
+                    detections = detector.predict(image, threshold)
+                    tile_predictions[tile_name] = detections
+
+                detector.close()
+
+                reconstructed_dir = (
+                    self.results_root / "reconstructed" / spec.name / f"fold{fold_idx}"
+                )
+                images_dir = reconstructed_dir / "images"
+                dataset = build_prediction_dataset(
+                    fold_original_to_tiles=original_to_tiles,
+                    tile_predictions=tile_predictions,
+                    suppression=self.suppression,
+                    original_images=self.original_images,
+                    base_coco=filtered_coco,
+                    output_images_dir=images_dir,
+                    create_mosaics=self.create_mosaics,
+                )
+                annotations_output = reconstructed_dir / "_annotations.coco.json"
+                save_coco_json(dataset, annotations_output)
+                elapsed = time.time() - start_time
+                print(
+                    f"[INFO]  └─ Completed model '{spec.name}' on fold {fold_idx} "
+                    f"in {elapsed:.1f}s. Saved to {annotations_output}"
+                )
+
+        print("\n[DONE] Pipeline execution completed.")
