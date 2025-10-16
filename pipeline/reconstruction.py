@@ -7,7 +7,7 @@ from typing import Dict, List, Mapping, MutableMapping, Sequence
 import numpy as np
 from PIL import Image
 
-from supression.cluster_diou_bws import cluster_diou_bws
+from supression.nms import nms
 
 from .coco_utils import save_coco_json
 from .types import (
@@ -37,7 +37,7 @@ def _clip_detection(det: DetectionRecord, *, width: int, height: int) -> Detecti
     )
 
 
-def _apply_cluster_suppression(
+def _apply_nms_suppression(
     detections: Sequence[DetectionRecord],
     *,
     image_width: int,
@@ -73,18 +73,13 @@ def _apply_cluster_suppression(
         )
         scores = np.array([det.score for det in class_dets], dtype=np.float32)
 
-        try:
-            suppressed_boxes, suppressed_scores = cluster_diou_bws(
-                boxes,
-                scores,
-                affinity_thresh=params.affinity_threshold,
-                lambda_weight=params.lambda_weight,
-            )
-        except ValueError:
-            suppressed_boxes = boxes
-            suppressed_scores = scores
+        kept_boxes, kept_scores = nms(
+            boxes,
+            scores,
+            iou_thresh=params.affinity_threshold,
+        )
 
-        for box, score in zip(suppressed_boxes, suppressed_scores):
+        for box, score in zip(kept_boxes, kept_scores):
             x1, y1, x2, y2 = box.tolist()
             clipped = _clip_detection(
                 DetectionRecord(
@@ -159,7 +154,7 @@ def build_prediction_dataset(
             detections = tile_predictions.get(tile.file_name, [])
             combined.extend(_project_tile_detections(tile, detections))
 
-        suppressed = _apply_cluster_suppression(
+        suppressed = _apply_nms_suppression(
             combined,
             image_width=original_meta.width,
             image_height=original_meta.height,

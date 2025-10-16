@@ -5,6 +5,8 @@ from pathlib import Path
 
 from Detectors.YOLOV5_TPH.GeraLabels import CriarLabelsYOLOV5TPH
 
+ROOT_DATA_DIR = os.path.join('..', 'dataset', 'all')
+
 
 def _resolve_output_dir() -> Path:
     project_root = Path(__file__).resolve().parents[3]
@@ -12,19 +14,15 @@ def _resolve_output_dir() -> Path:
     return project_root / project_name
 
 
-def runYOLOV5TPH(fold, fold_dir, root_data_dir):
-    dataset_root = Path(root_data_dir).resolve()
-    data_yaml_path = CriarLabelsYOLOV5TPH(fold, dataset_root)
+def runYOLOV5TPH(fold, fold_dir, ROOT_DATA_DIR):
+    CriarLabelsYOLOV5TPH(fold)
     treino = os.path.join('Detectors', 'YOLOV5_TPH', 'TreinoYOLOV5TPH.sh')
 
     target_dir = Path(fold_dir) / 'YOLOV5_TPH'
     if target_dir.exists():
         shutil.rmtree(target_dir)
 
-    env = os.environ.copy()
-    env.setdefault("PYTHONWARNINGS", "ignore")
-    env["TPH_DATA"] = str(data_yaml_path)
-    subprocess.run([treino], check=True, env=env)
+    subprocess.run([treino], check=True)
 
     output_dir = _resolve_output_dir()
     if not output_dir.exists():
@@ -35,9 +33,6 @@ def runYOLOV5TPH(fold, fold_dir, root_data_dir):
     Path(fold_dir).mkdir(parents=True, exist_ok=True)
     shutil.move(str(output_dir), str(target_dir))
 
-    yolo_tph_dir = dataset_root / 'YOLOV5_TPH'
-    if yolo_tph_dir.exists():
+    yolo_tph_dir = os.path.join(ROOT_DATA_DIR, 'YOLOV5_TPH')
+    if os.path.exists(yolo_tph_dir):
         shutil.rmtree(yolo_tph_dir)
-
-    if data_yaml_path.exists():
-        data_yaml_path.unlink()

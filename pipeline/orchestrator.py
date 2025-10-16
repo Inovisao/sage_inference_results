@@ -12,7 +12,7 @@ from .coco_utils import build_image_lookup_by_stem, extract_original_images, loa
 from .data_prep import build_tile_index, discover_fold_directories, prepare_original_test_split
 from .detectors import BaseDetector, resolve_detector
 from .reconstruction import build_prediction_dataset
-from .types import DetectionRecord, ModelWeights, OriginalImage, SuppressionParams
+from .types import DetectionRecord, ModelWeights, SuppressionParams
 
 _WEIGHT_SUFFIXES = {".pt", ".pth", ".onnx"}
 _FOLD_REGEX = re.compile(r"fold[_\-]?(\d+)", re.IGNORECASE)
@@ -31,13 +31,7 @@ class PipelineSettings:
 
 
 class SageInferencePipeline:
-    """
-    Coordinates the full pipeline:
-        1. Descobre folds/tiles
-        2. Identifica imagens originais de teste e filtra COCO
-        3. Executa inferência patch-a-patch por modelo/peso
-        4. Reprojeta, aplica supressão híbrida e salva COCO reconstruído
-    """
+    """Coordinate inference, reconstruction, and evaluation for each fold."""
 
     def __init__(self, settings: PipelineSettings):
         self.settings = settings
@@ -50,13 +44,12 @@ class SageInferencePipeline:
         self.detection_thresholds = {k.lower(): v for k, v in settings.detection_thresholds.items()}
         self.model_class_offsets = {k.lower(): v for k, v in settings.model_class_offsets.items()}
 
+        # Defaults for known detectors
         self.detection_thresholds.setdefault("yolov8", 0.25)
-        self.detection_thresholds.setdefault("yolov5_tph", 0.25)
         self.detection_thresholds.setdefault("faster", 0.5)
         self.detection_thresholds.setdefault("fasterrcnn", 0.5)
 
         self.model_class_offsets.setdefault("yolov8", 1)
-        self.model_class_offsets.setdefault("yolov5_tph", 0)
         self.model_class_offsets.setdefault("faster", 0)
         self.model_class_offsets.setdefault("fasterrcnn", 0)
 
@@ -84,47 +77,55 @@ class SageInferencePipeline:
         return max(ids) + 1
 
     def _discover_model_weights(self) -> List[ModelWeights]:
-        weights: List[ModelWeights] = []
+        specs: List[ModelWeights] = []
         if not self.models_root.exists():
             print(f"[WARN] Models directory '{self.models_root}' not found. Skipping inference.")
-            return weights
+            return specs
 
         for model_dir in sorted(self.models_root.iterdir()):
             if not model_dir.is_dir():
                 continue
             spec = ModelWeights(name=model_dir.name)
             for weight_path in sorted(model_dir.rglob("*")):
-                if not weight_path.is_file():
+                if not weight_path.is_file() or weight_path.suffix.lower() not in _WEIGHT_SUFFIXES:
                     continue
-                if weight_path.suffix.lower() not in _WEIGHT_SUFFIXES:
+                fold_idx = self._extract_fold_index(weight_path, model_dir)
+                if fold_idx is None:
                     continue
-                match = _FOLD_REGEX.search(weight_path.stem)
-                if not match:
-                    continue
-                fold_idx = int(match.group(1))
                 if fold_idx in spec.fold_to_path:
+                    existing = spec.fold_to_path[fold_idx]
                     print(
-                        f"[WARN] Model '{model_dir.name}' already has a weight for fold {fold_idx}. "
-                        f"Keeping existing path '{spec.fold_to_path[fold_idx]}' and skipping '{weight_path}'."
+                        f"[WARN] Model '{model_dir.name}' already has weight for fold {fold_idx}. "
+                        f"Keeping '{existing}' and skipping '{weight_path}'."
                     )
                     continue
                 spec.fold_to_path[fold_idx] = weight_path
             if spec.fold_to_path:
-                weights.append(spec)
-        return weights
+                specs.append(spec)
+        return specs
+
+    @staticmethod
+    def _extract_fold_index(weight_path: Path, model_dir: Path) -> Optional[int]:
+        match = _FOLD_REGEX.search(weight_path.stem)
+        if match:
+            return int(match.group(1))
+        current = weight_path.parent
+        while model_dir in current.parents:
+            match = _FOLD_REGEX.search(current.name)
+            if match:
+                return int(match.group(1))
+            current = current.parent
+        return None
 
     def _instantiate_detector(self, model_name: str, weight_path: Path) -> BaseDetector:
         detector_cls = resolve_detector(model_name)
-        key = model_name.lower()
-        class_offset = self.model_class_offsets.get(key, 0)
+        threshold = self.detection_thresholds.get(model_name.lower(), detector_cls.default_threshold)
+        class_offset = self.model_class_offsets.get(model_name.lower(), 0)
         extra_kwargs = {}
         if detector_cls.model_name in {"faster", "fasterrcnn"}:
             extra_kwargs["num_classes"] = self.num_classes
-        detector = detector_cls(
-            weight_path,
-            class_id_offset=class_offset,
-            **extra_kwargs,
-        )
+        detector = detector_cls(weight_path, class_id_offset=class_offset, **extra_kwargs)
+        detector.threshold = threshold  # convenience attribute
         return detector
 
     def run(self) -> None:
@@ -146,6 +147,8 @@ class SageInferencePipeline:
 
             test_dir = fold_dir / "test"
             tile_index, original_to_tiles = build_tile_index(test_dir, self.original_images_by_stem)
+
+            total_tiles = len(tile_index)
             originals_output_dir = self.originals_root / f"fold{fold_idx}"
             annotations_path = prepare_original_test_split(
                 self.train_coco,
@@ -159,12 +162,16 @@ class SageInferencePipeline:
                 continue
 
             for spec in model_specs:
+                if spec.name.lower() == 'yolov5_tph':
+                    print(f"[WARN] Skipping model '{spec.name}' due to pending dependency fixes.")
+                    continue
+
                 weight_path = spec.get(fold_idx)
                 if weight_path is None:
                     print(f"[WARN] Model '{spec.name}' has no weight for fold {fold_idx}. Skipping.")
                     continue
 
-                print(f"[INFO]  └─ Running model '{spec.name}' with weights '{weight_path.name}'")
+                print(f"[INFO]  +- Running model '{spec.name}' with weights '{weight_path.name}'")
                 start_time = time.time()
                 try:
                     detector = self._instantiate_detector(spec.name, weight_path)
@@ -172,20 +179,49 @@ class SageInferencePipeline:
                     print(f"[ERROR] Failed to instantiate detector '{spec.name}': {exc}")
                     continue
 
-                tile_predictions: MutableMapping[str, Sequence[DetectionRecord]] = {}
-                for tile_name, metadata in tile_index.items():
-                    image = cv2.imread(str(metadata.path))
-                    if image is None:
-                        raise FileNotFoundError(f"Unable to read tile image '{metadata.path}'.")
-                    threshold = self.detection_thresholds.get(spec.name.lower(), detector.default_threshold)
-                    detections = detector.predict(image, threshold)
-                    tile_predictions[tile_name] = detections
+                tile_predictions: Optional[MutableMapping[str, Sequence[DetectionRecord]]] = {}
+                try:
+                    with detector:
+                        for tile_idx, (tile_name, metadata) in enumerate(sorted(tile_index.items()), 1):
+                            print(
+                                f"        [fold {fold_idx}][{spec.name}] starting tile "
+                                f"{tile_idx}/{total_tiles}: {tile_name}"
+                            )
+                            image = cv2.imread(str(metadata.path))
+                            if image is None:
+                                raise FileNotFoundError(f"Unable to read tile image '{metadata.path}'.")
+                            threshold = self.detection_thresholds.get(spec.name.lower(), detector.threshold)
+                            try:
+                                detections = detector.predict(image, threshold)
+                            except ImportError as exc:
+                                print(
+                                    f"[ERROR] Missing dependency while running '{spec.name}' on fold {fold_idx}: {exc}"
+                                )
+                                tile_predictions = None
+                                print(
+                                    f"        [fold {fold_idx}][{spec.name}] dependency missing; aborting model"
+                                )
+                                break
+                            tile_predictions[tile_name] = detections
+                            print(
+                                f"        [fold {fold_idx}][{spec.name}] finished {tile_name} "
+                                f"with {len(detections)} detections"
+                            )
+                            if tile_idx % 100 == 0 or tile_idx == total_tiles:
+                                print(
+                                    f"        [fold {fold_idx}][{spec.name}] "
+                                    f"{tile_idx}/{total_tiles} tiles processed"
+                                )
+                finally:
+                    detector.close()
 
-                detector.close()
+                if tile_predictions is None:
+                    print(
+                        f"[WARN] Skipping model '{spec.name}' on fold {fold_idx} due to unresolved dependencies."
+                    )
+                    continue
 
-                reconstructed_dir = (
-                    self.results_root / "reconstructed" / spec.name / f"fold{fold_idx}"
-                )
+                reconstructed_dir = self.results_root / "reconstructed" / spec.name / f"fold{fold_idx}"
                 images_dir = reconstructed_dir / "images"
                 dataset = build_prediction_dataset(
                     fold_original_to_tiles=original_to_tiles,
@@ -200,7 +236,7 @@ class SageInferencePipeline:
                 save_coco_json(dataset, annotations_output)
                 elapsed = time.time() - start_time
                 print(
-                    f"[INFO]  └─ Completed model '{spec.name}' on fold {fold_idx} "
+                    f"[INFO]  +- Completed model '{spec.name}' on fold {fold_idx} "
                     f"in {elapsed:.1f}s. Saved to {annotations_output}"
                 )
 
