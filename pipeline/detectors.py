@@ -108,7 +108,7 @@ class YOLOv5TPHDetector(BaseDetector):
     model_name = "yolov5_tph"
 
     def _load_model(self) -> None:
-        module_path = "detectors.yolov5_tph.DetectionsYOLOV5TPH"
+        module_path = "detectors.YOLOV5_TPH.DetectionsYOLOV5TPH"
         module = importlib.import_module(module_path)
         self._impl = module.ResultYOLOV5TPH  # type: ignore[attr-defined]
 
@@ -120,8 +120,8 @@ class YOLOv5TPHDetector(BaseDetector):
                 y=float(det[1]),
                 width=float(det[2]),
                 height=float(det[3]),
-                score=float(det[5]),
-                category_id=int(det[4]) + self.class_id_offset,
+                score=float(det[4]),
+                category_id=int(det[5]) + self.class_id_offset,
             )
             for det in results
         ]
