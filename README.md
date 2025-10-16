@@ -55,25 +55,13 @@ Adapte os caminhos no arquivo `PipelineSettings` (ver abaixo) se a estrutura do 
 
 ## Fluxos principais
 
-### 1. Treinamento/Evaluação tradicional (`main.py`)
-
-O script percorre as dobras em `dataset/all/filesJSON`, treina cada modelo habilitado em `MODELS` e grava métricas consolidadas em `results/results.csv`.
-
-Uso típico:
-
-```bash
-python main.py
-```
-
 Personalizações relevantes:
 
 - `MODELS`: lista de detectores a treinar/testar (`YOLOV8`, `Faster`, `Detr`, ...).
 - Flags como `APENAS_TESTE`, `GeraRult`, `GeraResultByClass`, `save_imgs`.
 - `resetar_pasta` limpa artefatos antigos antes de cada execução.
 
-> Importante: alguns caminhos importam módulos com `Detectors.` (D maiúsculo). Em sistemas sensíveis a case (Linux), assegure-se de manter a capitalização original ao mover/copiar a pasta.
-
-### 2. Pipeline moderna (`run_pipeline.py`)
+### Pipeline (`run_pipeline.py`)
 
 Para processar as dobras com a nova orquestração:
 
@@ -95,7 +83,7 @@ Parâmetros personalizáveis em `PipelineSettings`:
 - `create_mosaics`: gera mosaicos RGB com as tiles combinadas.
 - `suppression`: configure `affinity_threshold` (IoU) e `lambda_weight` para a supressão híbrida.
 
-### 3. Avaliação de reconstruções
+### Avaliação de reconstruções
 
 Depois da pipeline, calcule métricas por dobra/modelo:
 
@@ -106,7 +94,7 @@ python evaluate_reconstructed.py --dataset-root dataset --results-root results
 - Gera `results/pipeline_metrics.csv` com agregados.
 - Cria `results/details_<modelo>_<fold>.csv` contendo métricas por imagem.
 
-### 4. Depuração visual
+### Depuração visual
 
 - `verify_bboxes.py`: desenha detecções reconstruídas em uma imagem. Útil para validação manual.
 - `debug_single_image.py`: roda todo o fluxo de uma única imagem (via tiles) exibindo supressão intermediária.
@@ -128,27 +116,16 @@ Consulte `requirements.txt` para versão recomendada e pacotes auxiliares.
 
 - Certifique-se de que a codificação dos arquivos (`UTF-8`) suporte caracteres acentuados presentes nos scripts. Alguns foram exportados com caracteres corrompidos; regrave se necessário.
 - O módulo `Detectors.mminference.inference` é referenciado, mas não está presente no repositório. Se a integração com MMDetection for necessária, adicione a pasta correspondente.
-- Em `main.py`, funções para DETR dependem de `Detectors/Detr`, também ausente aqui.
 - As pastas `dataset/` e `pesos/` não são versionadas; garanta que o conteúdo local siga a convenção descrita.
 
 ## Scripts úteis
 
 | Script | Descrição |
 |--------|-----------|
-| `main.py` | Loop de treinamento/avaliação clássico por dobra. |
 | `run_pipeline.py` | Entrada única para a pipeline modular (inferência → reconstrução). |
 | `ResultsDetections.py` | Consolida métricas padronizadas e gera CSVs. |
 | `evaluate_reconstructed.py` | Calcula métricas em reconstruções geradas pela pipeline. |
 | `verify_bboxes.py` | Visualização rápida de detecções (threshold configurável). |
 | `debug_single_image.py` | Depuração detalhada de uma imagem original (tile + supressão). |
 
-## Próximos passos sugeridos
-
-1. Revisar/normalizar encoding dos scripts com acentuação corrompida para evitar exceções em ambientes Unix.
-2. Completar os módulos ausentes (`ResultsDetectionsbyclass.py`, `Detectors/Detr`, integ. MMDetection) ou remover as referências se não forem mais utilizados.
-3. Automatizar testes rápidos (por exemplo, em `pytest`) para garantir que a pipeline identifique corretamente a presença/ausência de pesos por dobra.
-
----
-
-Para dúvidas ou melhorias, abra uma issue interna descrevendo o cenário (dataset, pesos e scripts executados). Isso facilita reproduzir o ambiente e acelerar a correção.
 
