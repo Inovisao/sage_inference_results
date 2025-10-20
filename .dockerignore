@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*.so
+.git
+.gitignore
+.mypy_cache/
+.pytest_cache/
+.venv/
+env/
+venv/
+build/
+dist/
+
+# Large runtime artifacts that should be mounted at runtime instead
+dataset/
+pesos/
+results/
+original_images_test/
+supression/
+logs/
+
+# Images and notebooks not needed for build
+*.png
+*.jpg
+*.jpeg
+*.ipynb
+
+# Pip caches
+pip-wheel-metadata/
+pip-download-cache/

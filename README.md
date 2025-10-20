@@ -32,10 +32,10 @@ results_inference_sage/
 
 Adapte os caminhos no arquivo `PipelineSettings` (ver abaixo) se a estrutura do seu dataset diferir.
 
-## Configuração do ambiente
+## Configuracao do ambiente
 
 1. **Python**: recomenda-se Python 3.10 (garante compatibilidade com Torch 1.13.x e Ultralytics 8.x).
-2. **Crie um ambiente virtual**:
+2. **Ambiente virtual com venv**:
 
    ```bash
    python -m venv .venv
@@ -43,15 +43,78 @@ Adapte os caminhos no arquivo `PipelineSettings` (ver abaixo) se a estrutura do 
    source .venv/bin/activate  # Linux/macOS
    ```
 
-3. **Instale as dependências**:
+   Alternativa com Conda (GPU):
+
+   ```bash
+   conda create -n sage python=3.10
+   conda activate sage
+   conda install pytorch==1.13.1 torchvision==0.14.1 pytorch-cuda=11.6 -c pytorch -c nvidia
+   pip install -r requirements.txt
+   ```
+
+   Para CPU apenas, substitua a instalacao do PyTorch por:
+
+   ```bash
+   conda install pytorch==1.13.1 torchvision==0.14.1 cpuonly -c pytorch
+   ```
+
+3. **Instale as dependencias**:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-4. **YOLOv5-TPH**: clone o repositório oficial dentro de `detectors/YOLOV5_TPH/tph-yolov5` e instale as dependências listadas lá (usando o mesmo ambiente). O wrapper `ResultYOLOV5TPH` procura por essa pasta automaticamente.
+4. **YOLOv5-TPH**: clone o repositorio oficial dentro de `detectors/YOLOV5_TPH/tph-yolov5` e instale as dependencias listadas la (usando o mesmo ambiente). O wrapper `ResultYOLOV5TPH` procura por essa pasta automaticamente.
 
-5. **Pesos pré-treinados**: coloque os arquivos `.pt/.pth/.onnx` em `pesos/<modelo>/fold_X/` respeitando o padrão de nomes (`fold_1`, `fold_2`, ...). A pipeline identifica o índice da dobra a partir do nome do arquivo ou do diretório.
+5. **Pesos pre-treinados**: coloque os arquivos `.pt/.pth/.onnx` em `pesos/<modelo>/fold_X/` respeitando o padrao de nomes (`fold_1`, `fold_2`, ...). A pipeline identifica o indice da dobra a partir do nome do arquivo ou do diretorio.
+
+## Execucao via Docker
+
+O repositorio inclui um `Dockerfile` baseado em `pytorch/pytorch:1.13.1-cuda11.6-cudnn8-runtime`, que instala as dependencias do projeto e do wrapper YOLOv5-TPH.
+
+1. **Build da imagem**
+
+   ```bash
+   docker build -t sage-inference .
+   ```
+
+2. **Monte os diretorios grandes como volumes**
+
+   Os diretorios `dataset/`, `pesos/`, `results/` e `original_images_test/` estao listados em `.dockerignore` para evitar camadas enormes. Monte-os ao executar o container:
+
+   ```bash
+   docker run --rm \
+     --gpus all \  # remova se nao houver GPU/NVIDIA
+     -v ${PWD}/dataset:/app/dataset \
+     -v ${PWD}/pesos:/app/pesos \
+     -v ${PWD}/results:/app/results \
+     -v ${PWD}/original_images_test:/app/original_images_test \
+     sage-inference
+   ```
+
+   O comando padrao executa `python run_pipeline.py`. Para rodar outro script, sobrescreva o comando:
+
+   ```bash
+   docker run --rm -it \
+     --gpus all \
+     -v ${PWD}/dataset:/app/dataset \
+     -v ${PWD}/pesos:/app/pesos \
+     -v ${PWD}/results:/app/results \
+     sage-inference \
+     python debug_single_image.py --model faster --weight pesos/faster/fold_3/best.pth
+   ```
+
+3. **Execucao em CPU**
+
+   Se nao houver GPU, altere a imagem base para `python:3.10-slim` e instale os wheels CPU do PyTorch antes de `requirements.txt`:
+
+   ```dockerfile
+   RUN pip install --upgrade pip && \
+       pip install torch==1.13.1+cpu torchvision==0.14.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu && \
+       pip install -r requirements.txt
+   ```
+
+   Remova `--gpus all` ao executar o container.
 
 ## Fluxos principais
 
