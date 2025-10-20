@@ -6,3 +6,4 @@ __pycache__/debug_single_image.cpython-311.pyc
 __pycache__/run_pipeline.cpython-311.pyc
 results/*
 *__pycache__
+original_images_test

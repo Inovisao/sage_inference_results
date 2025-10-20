@@ -162,10 +162,6 @@ class SageInferencePipeline:
                 continue
 
             for spec in model_specs:
-                if spec.name.lower() == 'yolov5_tph':
-                    print(f"[WARN] Skipping model '{spec.name}' due to pending dependency fixes.")
-                    continue
-
                 weight_path = spec.get(fold_idx)
                 if weight_path is None:
                     print(f"[WARN] Model '{spec.name}' has no weight for fold {fold_idx}. Skipping.")
