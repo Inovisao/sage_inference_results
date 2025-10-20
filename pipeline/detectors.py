@@ -145,13 +145,45 @@ class FasterRCNNDetector(BaseDetector):
         model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
         checkpoint = torch.load(self.weight_path, map_location=self.torch_device or "cpu")
-        state_dict = checkpoint.get("model_state_dict") if isinstance(checkpoint, dict) else checkpoint
+
+        # === Handle multiple checkpoint formats ===
+        state_dict = None
+        if isinstance(checkpoint, dict):
+            # Caso 1: dict com chaves padrão de state_dict
+            first_key = next(iter(checkpoint.keys())) if checkpoint else ""
+            if any(first_key.startswith(prefix) for prefix in ["backbone.", "rpn.", "roi_heads.", "transform."]):
+                state_dict = checkpoint
+
+            # Caso 2: dict com wrapper de modelo
+            elif "model_state_dict" in checkpoint:
+                state_dict = checkpoint["model_state_dict"]
+            elif "state_dict" in checkpoint:
+                state_dict = checkpoint["state_dict"]
+            elif "model" in checkpoint:
+                model_obj = checkpoint["model"]
+                state_dict = (
+                    model_obj.state_dict()
+                    if hasattr(model_obj, "state_dict")
+                    else model_obj
+                )
+
+        # Caso 3: YOLOv8 ou outro modelo salvo inteiro
+        elif hasattr(checkpoint, "state_dict"):
+            state_dict = checkpoint.state_dict()
+
+        # Caso não identificado
         if state_dict is None:
-            raise RuntimeError(f"Unexpected checkpoint format for {self.weight_path}")
-        model.load_state_dict(state_dict)
+            raise RuntimeError(
+                f"Unsupported checkpoint format at {self.weight_path}. "
+                f"Found type={type(checkpoint)}, keys={list(checkpoint.keys()) if isinstance(checkpoint, dict) else 'N/A'}"
+            )
+
+        # === Load the state_dict ===
+        model.load_state_dict(state_dict, strict=False)
         model.to(self.torch_device or "cpu")
         model.eval()
         self._model = model
+
 
     def predict(self, image: np.ndarray, threshold: float) -> List[DetectionRecord]:
         if self._model is None:
@@ -161,7 +193,7 @@ class FasterRCNNDetector(BaseDetector):
         except ImportError as exc:  # pragma: no cover
             raise ImportError("torch is required for Faster R-CNN inference.") from exc
 
-        image_rgb = image[:, :, ::-1]  # BGR to RGB
+        image_rgb = image[:, :, ::-1].copy()  # BGR to RGB (copy to avoid negative strides)
         tensor = torch.from_numpy(image_rgb).float() / 255.0
         tensor = tensor.permute(2, 0, 1).to(self.torch_device or "cpu")
         with torch.no_grad():
@@ -173,16 +205,36 @@ class FasterRCNNDetector(BaseDetector):
         if boxes is None or scores is None or labels is None:
             return []
 
+        boxes_np = boxes.detach().cpu().numpy()
+        scores_np = scores.detach().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
+
+        if boxes_np.size == 0:
+            return []
+
+        height, width = image.shape[:2]
+        max_coord = float(boxes_np.max()) if boxes_np.size else 0.0
+        if max_coord <= 1.0 + 1e-6:
+            scale = np.array([width, height, width, height], dtype=np.float32)
+            boxes_np = boxes_np * scale
+
+        boxes_np[:, [0, 2]] = np.clip(boxes_np[:, [0, 2]], 0.0, float(width))
+        boxes_np[:, [1, 3]] = np.clip(boxes_np[:, [1, 3]], 0.0, float(height))
+
         detections: List[DetectionRecord] = []
-        for (x1, y1, x2, y2), score, label in zip(boxes.cpu().numpy(), scores.cpu().numpy(), labels.cpu().numpy()):
+        for (x1, y1, x2, y2), score, label in zip(boxes_np, scores_np, labels_np):
             if float(score) < threshold:
+                continue
+            width_box = max(0.0, float(x2 - x1))
+            height_box = max(0.0, float(y2 - y1))
+            if width_box == 0.0 or height_box == 0.0:
                 continue
             detections.append(
                 DetectionRecord(
                     x=float(x1),
                     y=float(y1),
-                    width=max(0.0, float(x2 - x1)),
-                    height=max(0.0, float(y2 - y1)),
+                    width=width_box,
+                    height=height_box,
                     score=float(score),
                     category_id=int(label) + self.class_id_offset,
                 )

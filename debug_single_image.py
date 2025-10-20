@@ -140,13 +140,13 @@ def main() -> None:
         description="Run inference on all tiles of a single image and visualise the suppressed detections."
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
-    parser.add_argument("--fold", type=str, default="fold_1", help="Fold identifier (e.g., fold_1)")
-    parser.add_argument("--image-name", type=str, default="100.jpg", help="Original image file name, e.g., 100.jpg")
-    parser.add_argument("--model", type=str, default="yolov8", help="Detector name (yolov8, faster, etc.)")
+    parser.add_argument("--fold", type=str, default="fold_3", help="Fold identifier (e.g., fold_1)")
+    parser.add_argument("--image-name", type=str, default="206.jpg", help="Original image file name, e.g., 100.jpg")
+    parser.add_argument("--model", type=str, default="faster", help="Detector name (yolov8, faster, yolov5_tph)")
     parser.add_argument(
         "--weight",
         type=Path,
-        default=Path("pesos/yolov8/fold_1/weights/best.pt"),
+        default=Path("pesos/faster/fold_3/best.pth"),
         help="Path to the trained weight file (.pt/.pth)",
     )
     parser.add_argument("--threshold", type=float, default=0.25, help="Confidence threshold")
@@ -168,7 +168,26 @@ def main() -> None:
     print(f"[INFO] Located {len(tiles)} tiles for image '{args.image_name}'.")
 
     detector_cls = resolve_detector(args.model)
-    detector = detector_cls(args.weight)
+    
+    # Handle Faster R-CNN specific requirements
+    extra_kwargs = {}
+    if detector_cls.model_name in {"faster", "fasterrcnn"}:
+        # Infer num_classes from the dataset
+        coco_path = dataset_root / "train" / "_annotations.coco.json"
+        if coco_path.exists():
+            import json
+            with open(coco_path, 'r') as f:
+                coco_data = json.load(f)
+            categories = coco_data.get("categories", [])
+            if categories:
+                max_id = max(int(cat["id"]) for cat in categories)
+                extra_kwargs["num_classes"] = max_id + 1
+            else:
+                extra_kwargs["num_classes"] = 2  # default
+        else:
+            extra_kwargs["num_classes"] = 2  # default
+    
+    detector = detector_cls(args.weight, **extra_kwargs)
     print(f"[INFO] Loaded detector '{args.model}' from '{args.weight}'.")
 
     aggregated: List[DetectionRecord] = []
