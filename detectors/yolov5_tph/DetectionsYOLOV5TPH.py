@@ -162,5 +162,5 @@ class ResultYOLOV5TPH:
             pred[:, :4] = scale_coords(img_tensor.shape[2:], pred[:, :4], img0.shape).round()
             for *xyxy, conf, cls in pred.cpu().numpy():
                 x1, y1, x2, y2 = xyxy
-                results.append([int(x1), int(y1), int(x2), int(y2), int(cls + 1), float(conf)])
+                results.append([float(x1), float(y1), float(x2), float(y2), float(conf), int(cls + 1)])
         return xyxy_to_xywh(results)

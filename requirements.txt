@@ -1,19 +1,34 @@
+# === Conda quickstart ========================================================
+# GPU (CUDA 11.6):
+#   conda create -n sage python=3.10
+#   conda activate sage
+#   conda install pytorch==1.13.1 torchvision==0.14.1 pytorch-cuda=11.6 -c pytorch -c nvidia
+#   pip install -r requirements.txt
+#
+# CPU-only alternative:
+#   conda create -n sage-cpu python=3.10
+#   conda activate sage-cpu
+#   conda install pytorch==1.13.1 torchvision==0.14.1 cpuonly -c pytorch
+#   pip install -r requirements.txt
+#
+# ============================================================================ #
+
 # Core numerical stack
 numpy==1.24.4
 scipy==1.10.1
 
-# PyTorch ecosystem (aligned across YOLOv8, Faster R-CNN e YOLOv5-TPH)
+# PyTorch ecosystem (aligned across YOLOv8, Faster R-CNN and YOLOv5-TPH)
 torch==1.13.1
 torchvision==0.14.1
 torchmetrics==1.3.0
 
-# Detectores e visualização
+# Detectors and visualization
 ultralytics==8.0.196
 supervision==0.21.0
 opencv-python==4.8.1.78
 pillow==9.5.0
 
-# Utilidades para pipelines e scripts auxiliares
+# Pipeline utilities
 pyyaml==6.0.1
 pandas==1.5.3
 matplotlib==3.7.2
@@ -21,5 +36,5 @@ seaborn==0.12.2
 tqdm==4.66.1
 requests==2.31.0
 
-# Observação: os requisitos específicos do repositório YOLOv5-TPH
-# devem ser instalados a partir de detectors/YOLOV5_TPH/tph-yolov5/requirements.txt
+# Additional requirements for YOLOv5-TPH must be installed from:
+# detectors/YOLOV5_TPH/tph-yolov5/requirements.txt

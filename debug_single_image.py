@@ -146,7 +146,7 @@ def main() -> None:
     parser.add_argument(
         "--weight",
         type=Path,
-        default=Path("pesos/faster/fold_3/best.pth"),
+        default=Path("pesos/faster/fold_2/best.pth"),
         help="Path to the trained weight file (.pt/.pth)",
     )
     parser.add_argument("--threshold", type=float, default=0.25, help="Confidence threshold")
