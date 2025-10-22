@@ -7,3 +7,4 @@ __pycache__/run_pipeline.cpython-311.pyc
 results/*
 *__pycache__
 original_images_test
+model_checkpoints

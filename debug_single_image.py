@@ -10,8 +10,9 @@ import numpy as np
 from pipeline.data_prep import parse_tile_filename
 from pipeline.detectors import resolve_detector
 from pipeline.types import DetectionRecord, SuppressionParams
-from supression.nms import nms
+from supression.cluster_diou_nms import cluster_diou_nms
 
+THRESHOLD = 0.4
 
 def _discover_tiles_for_image(test_dir: Path, target_stem: str) -> List[Tuple[Path, int, int]]:
     """Return a sorted list of (tile_path, offset_x, offset_y) for a given image stem."""
@@ -81,10 +82,10 @@ def _apply_suppression(
         )
         scores = np.array([det.score for det in dets], dtype=np.float32)
 
-        keep_boxes, keep_scores = nms(
+        keep_boxes, keep_scores = cluster_diou_nms(
             boxes,
             scores,
-            iou_thresh=params.affinity_threshold,
+            diou_thresh=params.affinity_threshold,
         )
 
         for (x1, y1, x2, y2), score in zip(keep_boxes, keep_scores):
@@ -140,13 +141,13 @@ def main() -> None:
         description="Run inference on all tiles of a single image and visualise the suppressed detections."
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
-    parser.add_argument("--fold", type=str, default="fold_3", help="Fold identifier (e.g., fold_1)")
-    parser.add_argument("--image-name", type=str, default="206.jpg", help="Original image file name, e.g., 100.jpg")
-    parser.add_argument("--model", type=str, default="faster", help="Detector name (yolov8, faster, yolov5_tph)")
+    parser.add_argument("--fold", type=str, default="fold_1", help="Fold identifier (e.g., fold_1)")
+    parser.add_argument("--image-name", type=str, default="774.jpg", help="Original image file name, e.g., 100.jpg")
+    parser.add_argument("--model", type=str, default="yolov8", help="Detector name (yolov8, faster, yolov5_tph)")
     parser.add_argument(
         "--weight",
         type=Path,
-        default=Path("pesos/faster/fold_2/best.pth"),
+        default=Path("model_checkpoints/fold_3/YOLOV8/train/weights/best.pt"),
         help="Path to the trained weight file (.pt/.pth)",
     )
     parser.add_argument("--threshold", type=float, default=0.25, help="Confidence threshold")
@@ -208,7 +209,7 @@ def main() -> None:
         detector.close()
 
     print(f"[INFO] Total projected detections before suppression: {len(aggregated)}")
-    suppressed = _apply_suppression(aggregated, SuppressionParams())
+    suppressed = _apply_suppression(aggregated, SuppressionParams(affinity_threshold=THRESHOLD))
     print(f"[INFO] Detections after suppression: {len(suppressed)}")
 
     original_image_path = dataset_root / "train" / args.image_name
