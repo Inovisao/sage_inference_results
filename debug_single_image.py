@@ -10,7 +10,7 @@ import numpy as np
 from pipeline.data_prep import parse_tile_filename
 from pipeline.detectors import resolve_detector
 from pipeline.types import DetectionRecord, SuppressionParams
-from supression.cluster_diou_nms import cluster_diou_nms
+from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
 
 THRESHOLD = 0.4
 
@@ -82,20 +82,23 @@ def _apply_suppression(
         )
         scores = np.array([det.score for det in dets], dtype=np.float32)
 
-        keep_boxes, keep_scores = cluster_diou_nms(
+        keep_indices = adaptive_cluster_diou_nms(
             boxes,
             scores,
-            diou_thresh=params.affinity_threshold,
+            T0=params.affinity_threshold,
+            alpha=params.lambda_weight,
         )
 
-        for (x1, y1, x2, y2), score in zip(keep_boxes, keep_scores):
+        for idx in keep_indices:
+            x1, y1, x2, y2 = boxes[idx].tolist()
+            score = float(scores[idx])
             suppressed.append(
                 DetectionRecord(
                     x=float(x1),
                     y=float(y1),
                     width=float(x2 - x1),
                     height=float(y2 - y1),
-                    score=float(score),
+                    score=score,
                     category_id=class_id,
                 )
             )

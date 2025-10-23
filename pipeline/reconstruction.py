@@ -7,7 +7,7 @@ from typing import Dict, List, Mapping, MutableMapping, Sequence
 import numpy as np
 from PIL import Image
 
-from supression.nms import nms
+from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
 
 from .coco_utils import save_coco_json
 from .types import (
@@ -73,21 +73,23 @@ def _apply_nms_suppression(
         )
         scores = np.array([det.score for det in class_dets], dtype=np.float32)
 
-        kept_boxes, kept_scores = nms(
+        keep_indices = adaptive_cluster_diou_nms(
             boxes,
             scores,
-            iou_thresh=params.affinity_threshold,
+            T0=params.affinity_threshold,
+            alpha=params.lambda_weight,
         )
 
-        for box, score in zip(kept_boxes, kept_scores):
-            x1, y1, x2, y2 = box.tolist()
+        for idx in keep_indices:
+            x1, y1, x2, y2 = boxes[idx].tolist()
+            score = float(scores[idx])
             clipped = _clip_detection(
                 DetectionRecord(
                     x=float(x1),
                     y=float(y1),
                     width=float(x2 - x1),
                     height=float(y2 - y1),
-                    score=float(score),
+                    score=score,
                     category_id=class_id,
                 ),
                 width=image_width,

@@ -77,31 +77,53 @@ class SageInferencePipeline:
         return max(ids) + 1
 
     def _discover_model_weights(self) -> List[ModelWeights]:
-        specs: List[ModelWeights] = []
+        specs_by_name: Dict[str, ModelWeights] = {}
         if not self.models_root.exists():
             print(f"[WARN] Models directory '{self.models_root}' not found. Skipping inference.")
-            return specs
+            return []
 
-        for model_dir in sorted(self.models_root.iterdir()):
-            if not model_dir.is_dir():
+        for entry in sorted(self.models_root.iterdir()):
+            if not entry.is_dir():
                 continue
-            spec = ModelWeights(name=model_dir.name)
-            for weight_path in sorted(model_dir.rglob("*")):
+
+            fold_match = _FOLD_REGEX.match(entry.name)
+            if fold_match:
+                fold_idx = int(fold_match.group(1))
+                for model_dir in sorted(entry.iterdir()):
+                    if not model_dir.is_dir():
+                        continue
+                    spec = specs_by_name.setdefault(model_dir.name, ModelWeights(name=model_dir.name))
+                    for weight_path in sorted(model_dir.rglob("*")):
+                        if not weight_path.is_file() or weight_path.suffix.lower() not in _WEIGHT_SUFFIXES:
+                            continue
+                        if fold_idx in spec.fold_to_path:
+                            existing = spec.fold_to_path[fold_idx]
+                            print(
+                                f"[WARN] Model '{model_dir.name}' already has weight for fold {fold_idx}. "
+                                f"Keeping '{existing}' and skipping '{weight_path}'."
+                            )
+                            continue
+                        spec.fold_to_path[fold_idx] = weight_path
+                continue
+
+            spec = specs_by_name.setdefault(entry.name, ModelWeights(name=entry.name))
+            for weight_path in sorted(entry.rglob("*")):
                 if not weight_path.is_file() or weight_path.suffix.lower() not in _WEIGHT_SUFFIXES:
                     continue
-                fold_idx = self._extract_fold_index(weight_path, model_dir)
+                fold_idx = self._extract_fold_index(weight_path, entry)
                 if fold_idx is None:
                     continue
                 if fold_idx in spec.fold_to_path:
                     existing = spec.fold_to_path[fold_idx]
                     print(
-                        f"[WARN] Model '{model_dir.name}' already has weight for fold {fold_idx}. "
+                        f"[WARN] Model '{entry.name}' already has weight for fold {fold_idx}. "
                         f"Keeping '{existing}' and skipping '{weight_path}'."
                     )
                     continue
                 spec.fold_to_path[fold_idx] = weight_path
-            if spec.fold_to_path:
-                specs.append(spec)
+
+        specs = [spec for spec in specs_by_name.values() if spec.fold_to_path]
+        specs.sort(key=lambda item: item.name.lower())
         return specs
 
     @staticmethod
