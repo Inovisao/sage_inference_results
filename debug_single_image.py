@@ -152,12 +152,17 @@ def main() -> None:
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
     parser.add_argument("--fold", type=str, default="fold_1", help="Fold identifier (e.g., fold_1)")
-    parser.add_argument("--image-name", type=str, default="774.jpg", help="Original image file name, e.g., 100.jpg")
-    parser.add_argument("--model", type=str, default="yolov8", help="Detector name (yolov8, faster, yolov5_tph)")
+    parser.add_argument("--image-name", type=str, default="788.jpg", help="Original image file name, e.g., 100.jpg")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="yolov8",
+        help="Detector name (yolov8, yolov11, yolov5_tph, retinanet, faster)",
+    )
     parser.add_argument(
         "--weight",
         type=Path,
-        default=Path("model_checkpoints/fold_3/YOLOV8/train/weights/best.pt"),
+        default=Path("model_checkpoints/fold_3/YOLOV8/best.pt"),
         help="Path to the trained weight file (.pt/.pth)",
     )
     parser.add_argument("--threshold", type=float, default=0.25, help="Confidence threshold")

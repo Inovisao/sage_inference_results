@@ -46,12 +46,18 @@ class SageInferencePipeline:
 
         # Defaults for known detectors
         self.detection_thresholds.setdefault("yolov8", 0.25)
+        self.detection_thresholds.setdefault("yolov5_tph", 0.25)
         self.detection_thresholds.setdefault("faster", 0.5)
         self.detection_thresholds.setdefault("fasterrcnn", 0.5)
+        self.detection_thresholds.setdefault("retinanet", 0.3)
+        self.detection_thresholds.setdefault("yolov11", 0.25)
 
         self.model_class_offsets.setdefault("yolov8", 1)
         self.model_class_offsets.setdefault("faster", 0)
         self.model_class_offsets.setdefault("fasterrcnn", 0)
+        self.model_class_offsets.setdefault("retinanet", 0)
+        self.model_class_offsets.setdefault("yolov11", 0)
+        self.model_class_offsets.setdefault("yolov5_tph", 0)
 
         self.train_coco_path = self.dataset_root / "train" / "_annotations.coco.json"
         self.train_images_dir = self.dataset_root / "train"

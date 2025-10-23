@@ -128,6 +128,59 @@ class YOLOv5TPHDetector(BaseDetector):
         return detections
 
 
+class RetinaNetDetector(BaseDetector):
+    model_name = "retinanet"
+    default_threshold = 0.3
+
+    def _load_model(self) -> None:
+        module_path = "detectors.RetinaNet.DetectionsRetinaNet"
+        module = importlib.import_module(module_path)
+        self._impl = module.ResultRetinaNet  # type: ignore[attr-defined]
+
+    def predict(self, image: np.ndarray, threshold: float) -> List[DetectionRecord]:
+        results = self._impl.result(image, str(self.weight_path), threshold)  # type: ignore[attr-defined]
+        detections: List[DetectionRecord] = []
+        for det in results:
+            x, y, w, h, label, score = det
+            detections.append(
+                DetectionRecord(
+                    x=float(x),
+                    y=float(y),
+                    width=float(w),
+                    height=float(h),
+                    score=float(score),
+                    category_id=int(label) + self.class_id_offset,
+                )
+            )
+        return detections
+
+
+class YOLOv11Detector(BaseDetector):
+    model_name = "yolov11"
+
+    def _load_model(self) -> None:
+        module_path = "detectors.YOLOV11.DetectionsYOLOV11"
+        module = importlib.import_module(module_path)
+        self._impl = module.ResultYOLOV11  # type: ignore[attr-defined]
+
+    def predict(self, image: np.ndarray, threshold: float) -> List[DetectionRecord]:
+        results = self._impl.result(image, str(self.weight_path), threshold)  # type: ignore[attr-defined]
+        detections: List[DetectionRecord] = []
+        for det in results:
+            x, y, w, h, label, score = det
+            detections.append(
+                DetectionRecord(
+                    x=float(x),
+                    y=float(y),
+                    width=float(w),
+                    height=float(h),
+                    score=float(score),
+                    category_id=int(label) + self.class_id_offset,
+                )
+            )
+        return detections
+
+
 class FasterRCNNDetector(BaseDetector):
     model_name = "faster"
 
@@ -247,6 +300,10 @@ DETECTOR_REGISTRY: Dict[str, Type[BaseDetector]] = {
     YOLOv5TPHDetector.model_name: YOLOv5TPHDetector,
     FasterRCNNDetector.model_name: FasterRCNNDetector,
     "fasterrcnn": FasterRCNNDetector,
+    RetinaNetDetector.model_name: RetinaNetDetector,
+    "retina": RetinaNetDetector,
+    YOLOv11Detector.model_name: YOLOv11Detector,
+    "yolo11": YOLOv11Detector,
 }
 
 
