@@ -51,6 +51,8 @@ class SuppressionParams:
 
     affinity_threshold: float = 0.5
     lambda_weight: float = 0.6
+    score_ratio_threshold: float = 0.85
+    duplicate_iou_threshold: float = 0.5
 
 
 @dataclass

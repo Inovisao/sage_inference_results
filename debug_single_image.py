@@ -12,7 +12,12 @@ from pipeline.detectors import resolve_detector
 from pipeline.types import DetectionRecord, SuppressionParams
 from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
 
-THRESHOLD = 0.4
+DEFAULT_SUPPRESSION = SuppressionParams(
+    affinity_threshold=0.4,
+    lambda_weight=0.3,
+    score_ratio_threshold=0.85,
+    duplicate_iou_threshold=0.5,
+)
 
 def _discover_tiles_for_image(test_dir: Path, target_stem: str) -> List[Tuple[Path, int, int]]:
     """Return a sorted list of (tile_path, offset_x, offset_y) for a given image stem."""
@@ -87,6 +92,8 @@ def _apply_suppression(
             scores,
             T0=params.affinity_threshold,
             alpha=params.lambda_weight,
+            score_ratio_thresh=params.score_ratio_threshold,
+            diou_dup_thresh=params.duplicate_iou_threshold,
         )
 
         for idx in keep_indices:
@@ -212,7 +219,7 @@ def main() -> None:
         detector.close()
 
     print(f"[INFO] Total projected detections before suppression: {len(aggregated)}")
-    suppressed = _apply_suppression(aggregated, SuppressionParams(affinity_threshold=THRESHOLD))
+    suppressed = _apply_suppression(aggregated, DEFAULT_SUPPRESSION)
     print(f"[INFO] Detections after suppression: {len(suppressed)}")
 
     original_image_path = dataset_root / "train" / args.image_name

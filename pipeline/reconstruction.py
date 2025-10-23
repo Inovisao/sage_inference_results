@@ -78,6 +78,8 @@ def _apply_nms_suppression(
             scores,
             T0=params.affinity_threshold,
             alpha=params.lambda_weight,
+            score_ratio_thresh=params.score_ratio_threshold,
+            diou_dup_thresh=params.duplicate_iou_threshold,
         )
 
         for idx in keep_indices:
