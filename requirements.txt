@@ -38,3 +38,12 @@ requests==2.31.0
 
 # Additional requirements for YOLOv5-TPH must be installed from:
 # detectors/YOLOV5_TPH/tph-yolov5/requirements.txt
+
+#statitics
+pandas 
+numpy 
+seaborn 
+matplotlib 
+scikit-learn 
+scipy 
+statsmodels
