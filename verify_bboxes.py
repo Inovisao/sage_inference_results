@@ -73,8 +73,8 @@ def main() -> None:
         description="Display bounding boxes from reconstructed predictions for a random (or specified) image."
     )
     parser.add_argument("--results-root", type=Path, default=Path("results"))
-    parser.add_argument("--model", type=str, default="yolov8")
-    parser.add_argument("--fold", type=str, default="fold1")
+    parser.add_argument("--model", type=str, default="faster")
+    parser.add_argument("--fold", type=str, default="fold5")
     parser.add_argument("--image-name", type=str, help="Optional image file name to visualise.")
     parser.add_argument("--score-threshold", type=float, default=0.25)
     parser.add_argument(
