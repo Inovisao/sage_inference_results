@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Mapping, MutableMapping, Optional, Sequence
+from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -49,10 +49,14 @@ class DetectionRecord:
 class SuppressionParams:
     """Parameters that control the hybrid suppression stage."""
 
-    affinity_threshold: float = 0.5
-    lambda_weight: float = 0.6
-    score_ratio_threshold: float = 0.85
-    duplicate_iou_threshold: float = 0.5
+    method: str = "cluster_diou_ait"
+    affinity_threshold: Optional[float] = 0.5
+    lambda_weight: Optional[float] = 0.6
+    score_ratio_threshold: Optional[float] = 0.85
+    duplicate_iou_threshold: Optional[float] = 0.5
+    iou_threshold: Optional[float] = 0.5
+    diou_threshold: Optional[float] = 0.5
+    extra: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass

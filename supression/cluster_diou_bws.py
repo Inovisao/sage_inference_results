@@ -33,7 +33,11 @@ def cluster_diou_bws(boxes, scores, affinity_thresh=0.5, lambda_weight=0.6):
         # Combina via média ponderada (BWS)
         cluster_boxes = boxes[cluster]
         cluster_scores = scores[cluster]
-        weights = cluster_scores / cluster_scores.sum()
+        total = cluster_scores.sum()
+        if total <= 0:
+            weights = np.full_like(cluster_scores, 1.0 / len(cluster_scores))
+        else:
+            weights = cluster_scores / total
         merged_box = np.sum(cluster_boxes * weights[:, None], axis=0)
         merged_score = cluster_scores.max()
 

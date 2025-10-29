@@ -23,7 +23,11 @@ def bws(boxes, scores, iou_thresh=0.5):
         cluster_boxes = boxes[overlaps]
         cluster_scores = scores[overlaps]
 
-        weights = cluster_scores / cluster_scores.sum()
+        total = cluster_scores.sum()
+        if total <= 0:
+            weights = np.full_like(cluster_scores, 1.0 / len(cluster_scores))
+        else:
+            weights = cluster_scores / total
         merged_box = np.sum(cluster_boxes * weights[:, None], axis=0)
 
         boxes_final.append(merged_box)

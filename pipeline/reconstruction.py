@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Mapping, MutableMapping, Sequence
+from typing import Callable, Dict, List, Mapping, MutableMapping, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
-
-from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
 
 from .coco_utils import save_coco_json
 from .types import (
@@ -18,6 +16,138 @@ from .types import (
     TileDetections,
     TileMetadata,
 )
+
+
+def apply_suppression(
+    detections: Sequence[DetectionRecord],
+    *,
+    image_width: int,
+    image_height: int,
+    params: SuppressionParams,
+) -> List[DetectionRecord]:
+    """
+    Apply the configured suppression strategy over class-wise detections.
+    """
+    method = (params.method or "cluster_diou_ait").lower()
+    extra = params.extra or {}
+
+    if method == "cluster_diou_ait":
+        from pipeline.suppression.adaptive_cluster_diou import adaptive_cluster_diou_nms
+
+        T0 = float(extra.get("T0", 0.45))
+        alpha = float(extra.get("alpha", 0.15))
+        k = int(extra.get("k", 5))
+        score_ratio_thresh = float(extra.get("score_ratio_threshold", extra.get("score_ratio_thresh", 0.85)))
+        diou_dup_thresh = float(extra.get("duplicate_iou_threshold", extra.get("diou_dup_thresh", 0.5)))
+
+        return _apply_classwise_suppression(
+            detections,
+            image_width=image_width,
+            image_height=image_height,
+            suppression_fn=lambda boxes, scores: adaptive_cluster_diou_nms(
+                boxes,
+                scores,
+                T0=T0,
+                alpha=alpha,
+                k=k,
+                score_ratio_thresh=score_ratio_thresh,
+                diou_dup_thresh=diou_dup_thresh,
+            ),
+            mode="indices",
+        )
+
+    if method == "nms":
+        from supression.nms import nms
+
+        iou_threshold = float(
+            extra.get("iou_threshold", params.iou_threshold if params.iou_threshold is not None else 0.5)
+        )
+        return _apply_classwise_suppression(
+            detections,
+            image_width=image_width,
+            image_height=image_height,
+            suppression_fn=lambda boxes, scores: nms(boxes, scores, iou_thresh=iou_threshold),
+            mode="boxes",
+        )
+
+    if method == "bws":
+        from supression.bws import bws
+
+        iou_threshold = float(
+            extra.get("iou_threshold", params.iou_threshold if params.iou_threshold is not None else 0.5)
+        )
+        return _apply_classwise_suppression(
+            detections,
+            image_width=image_width,
+            image_height=image_height,
+            suppression_fn=lambda boxes, scores: bws(boxes, scores, iou_thresh=iou_threshold),
+            mode="boxes",
+        )
+
+    if method == "cluster_diou_nms":
+        from supression.cluster_diou_nms import cluster_diou_nms
+
+        diou_threshold = float(
+            extra.get("diou_threshold", params.diou_threshold if params.diou_threshold is not None else 0.5)
+        )
+        return _apply_classwise_suppression(
+            detections,
+            image_width=image_width,
+            image_height=image_height,
+            suppression_fn=lambda boxes, scores: cluster_diou_nms(boxes, scores, diou_thresh=diou_threshold),
+            mode="boxes",
+        )
+
+    if method == "cluster_diou_bws":
+        from supression.cluster_diou_bws import cluster_diou_bws
+
+        affinity_threshold = float(
+            extra.get("affinity_threshold", params.affinity_threshold if params.affinity_threshold is not None else 0.5)
+        )
+        lambda_weight = float(
+            extra.get("lambda_weight", params.lambda_weight if params.lambda_weight is not None else 0.6)
+        )
+        return _apply_classwise_suppression(
+            detections,
+            image_width=image_width,
+            image_height=image_height,
+            suppression_fn=lambda boxes, scores: cluster_diou_bws(
+                boxes,
+                scores,
+                affinity_thresh=affinity_threshold,
+                lambda_weight=lambda_weight,
+            ),
+            mode="boxes",
+        )
+
+    # Default to adaptive Cluster-DIoU when no known method is provided.
+    from pipeline.suppression.adaptive_cluster_diou import adaptive_cluster_diou_nms
+
+    default_k = int(extra.get("k", 5))
+    T0 = float(params.affinity_threshold if params.affinity_threshold is not None else 0.45)
+    alpha = float(params.lambda_weight if params.lambda_weight is not None else 0.15)
+    score_ratio_thresh = float(
+        params.score_ratio_threshold if params.score_ratio_threshold is not None else 0.85
+    )
+    diou_dup_thresh = float(
+        params.duplicate_iou_threshold if params.duplicate_iou_threshold is not None else 0.5
+    )
+
+    return _apply_classwise_suppression(
+        detections,
+        image_width=image_width,
+        image_height=image_height,
+        suppression_fn=lambda boxes, scores: adaptive_cluster_diou_nms(
+            boxes,
+            scores,
+            T0=T0,
+            alpha=alpha,
+            k=default_k,
+            score_ratio_thresh=score_ratio_thresh,
+            diou_dup_thresh=diou_dup_thresh,
+        ),
+        mode="indices",
+    )
 
 
 def _clip_detection(det: DetectionRecord, *, width: int, height: int) -> DetectionRecord | None:
@@ -37,12 +167,13 @@ def _clip_detection(det: DetectionRecord, *, width: int, height: int) -> Detecti
     )
 
 
-def _apply_nms_suppression(
+def _apply_classwise_suppression(
     detections: Sequence[DetectionRecord],
     *,
     image_width: int,
     image_height: int,
-    params: SuppressionParams,
+    suppression_fn: Callable[[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray] | Sequence[int]],
+    mode: str,
 ) -> List[DetectionRecord]:
     if not detections:
         return []
@@ -73,32 +204,49 @@ def _apply_nms_suppression(
         )
         scores = np.array([det.score for det in class_dets], dtype=np.float32)
 
-        keep_indices = adaptive_cluster_diou_nms(
-            boxes,
-            scores,
-            T0=params.affinity_threshold,
-            alpha=params.lambda_weight,
-            score_ratio_thresh=params.score_ratio_threshold,
-            diou_dup_thresh=params.duplicate_iou_threshold,
-        )
+        result = suppression_fn(boxes, scores)
 
-        for idx in keep_indices:
-            x1, y1, x2, y2 = boxes[idx].tolist()
-            score = float(scores[idx])
-            clipped = _clip_detection(
-                DetectionRecord(
-                    x=float(x1),
-                    y=float(y1),
-                    width=float(x2 - x1),
-                    height=float(y2 - y1),
-                    score=score,
-                    category_id=class_id,
-                ),
-                width=image_width,
-                height=image_height,
-            )
-            if clipped:
-                final.append(clipped)
+        if mode == "indices":
+            keep_indices = list(result)
+            for idx in keep_indices:
+                x1, y1, x2, y2 = boxes[idx].tolist()
+                score = float(scores[idx])
+                clipped = _clip_detection(
+                    DetectionRecord(
+                        x=float(x1),
+                        y=float(y1),
+                        width=float(x2 - x1),
+                        height=float(y2 - y1),
+                        score=score,
+                        category_id=class_id,
+                    ),
+                    width=image_width,
+                    height=image_height,
+                )
+                if clipped:
+                    final.append(clipped)
+        elif mode == "boxes":
+            kept_boxes, kept_scores = result
+            if len(kept_boxes) == 0:
+                continue
+            for box, score in zip(kept_boxes, kept_scores):
+                x1, y1, x2, y2 = [float(v) for v in box.tolist()]
+                clipped = _clip_detection(
+                    DetectionRecord(
+                        x=x1,
+                        y=y1,
+                        width=float(x2 - x1),
+                        height=float(y2 - y1),
+                        score=float(score),
+                        category_id=class_id,
+                    ),
+                    width=image_width,
+                    height=image_height,
+                )
+                if clipped:
+                    final.append(clipped)
+        else:
+            raise ValueError(f"Unknown suppression mode '{mode}'.")
 
     final.sort(key=lambda det: det.score, reverse=True)
     return final
@@ -118,6 +266,122 @@ def _project_tile_detections(tile: TileMetadata, detections: Sequence[DetectionR
             )
         )
     return projected
+
+
+def collect_projected_detections(
+    *,
+    fold_original_to_tiles: OriginalToTiles,
+    tile_predictions: TileDetections,
+    original_images: Mapping[str, OriginalImage],
+) -> Tuple[Dict[int, List[DetectionRecord]], Dict[int, OriginalImage]]:
+    """
+    Project tile detections back to the original image space (pre-suppression).
+    Returns both the detections per image id and the associated metadata lookup.
+    """
+    detections_by_image: Dict[int, List[DetectionRecord]] = {}
+    image_meta_by_id: Dict[int, OriginalImage] = {}
+
+    for original_name, tiles in fold_original_to_tiles.items():
+        original_meta = original_images.get(original_name)
+        if original_meta is None:
+            raise KeyError(f"Missing metadata for original image '{original_name}'.")
+
+        image_meta_by_id[original_meta.id] = original_meta
+        combined: List[DetectionRecord] = []
+        for tile in tiles:
+            detections = tile_predictions.get(tile.file_name, [])
+            combined.extend(_project_tile_detections(tile, detections))
+
+        clipped: List[DetectionRecord] = []
+        for det in combined:
+            clipped_det = _clip_detection(det, width=original_meta.width, height=original_meta.height)
+            if clipped_det:
+                clipped.append(clipped_det)
+
+        detections_by_image[original_meta.id] = clipped
+
+    return detections_by_image, image_meta_by_id
+
+
+def build_dataset_from_detections(
+    *,
+    base_coco: Mapping[str, object],
+    detections_by_image: Mapping[int, Sequence[DetectionRecord]],
+) -> Mapping[str, object]:
+    """
+    Build a COCO-like dictionary using the provided detections per image id.
+    """
+    annotations: List[MutableMapping[str, object]] = []
+    ann_id = 0
+
+    for image_id, detections in detections_by_image.items():
+        for det in detections:
+            annotations.append(
+                {
+                    "id": ann_id,
+                    "image_id": image_id,
+                    "category_id": det.category_id,
+                    "bbox": [det.x, det.y, det.width, det.height],
+                    "area": det.width * det.height,
+                    "score": det.score,
+                }
+            )
+            ann_id += 1
+
+    dataset = {
+        "info": base_coco.get("info", {}),
+        "licenses": base_coco.get("licenses", []),
+        "images": base_coco.get("images", []),
+        "annotations": annotations,
+        "categories": base_coco.get("categories", []),
+    }
+    return dataset
+
+
+def apply_suppression_to_detections(
+    *,
+    detections_by_image: Mapping[int, Sequence[DetectionRecord]],
+    image_meta_by_id: Mapping[int, OriginalImage],
+    params: SuppressionParams,
+) -> Dict[int, List[DetectionRecord]]:
+    """
+    Apply suppression per image using the supplied SuppressionParams.
+    """
+    suppressed: Dict[int, List[DetectionRecord]] = {}
+    for image_id, detections in detections_by_image.items():
+        meta = image_meta_by_id.get(image_id)
+        if meta is None:
+            raise KeyError(f"No metadata registered for image id {image_id}.")
+        suppressed[image_id] = apply_suppression(
+            detections,
+            image_width=meta.width,
+            image_height=meta.height,
+            params=params,
+        )
+    return suppressed
+
+
+def build_raw_detection_dataset(
+    *,
+    fold_original_to_tiles: OriginalToTiles,
+    tile_predictions: TileDetections,
+    original_images: Mapping[str, OriginalImage],
+    base_coco: Mapping[str, object],
+) -> Tuple[Mapping[str, object], Dict[int, List[DetectionRecord]], Dict[int, OriginalImage]]:
+    """
+    Convenience helper that collects projected detections and builds a raw COCO dataset.
+    Returns the dataset along with the projected detections and metadata lookup.
+    """
+    detections_by_image, image_meta_by_id = collect_projected_detections(
+        fold_original_to_tiles=fold_original_to_tiles,
+        tile_predictions=tile_predictions,
+        original_images=original_images,
+    )
+    raw_dataset = build_dataset_from_detections(
+        base_coco=base_coco,
+        detections_by_image=detections_by_image,
+    )
+    return raw_dataset, detections_by_image, image_meta_by_id
 
 
 def _reconstruct_image(original: OriginalImage, tiles: Sequence[TileMetadata], output_path: Path) -> None:
@@ -140,53 +404,37 @@ def build_prediction_dataset(
     base_coco: Mapping[str, object],
     output_images_dir: Path,
     create_mosaics: bool = False,
+    projected_detections: Mapping[int, Sequence[DetectionRecord]] | None = None,
+    image_meta_by_id: Mapping[int, OriginalImage] | None = None,
 ) -> Mapping[str, object]:
     """
     Combine tile detections into original-image predictions and return a COCO-like dict.
     """
 
-    annotations: List[MutableMapping[str, object]] = []
-    ann_id = 0
-
-    for original_name, tiles in fold_original_to_tiles.items():
-        original_meta = original_images.get(original_name)
-        if original_meta is None:
-            raise KeyError(f"Missing metadata for original image '{original_name}'.")
-
-        combined: List[DetectionRecord] = []
-        for tile in tiles:
-            detections = tile_predictions.get(tile.file_name, [])
-            combined.extend(_project_tile_detections(tile, detections))
-
-        suppressed = _apply_nms_suppression(
-            combined,
-            image_width=original_meta.width,
-            image_height=original_meta.height,
-            params=suppression,
+    if projected_detections is None or image_meta_by_id is None:
+        projected_detections, image_meta_by_id = collect_projected_detections(
+            fold_original_to_tiles=fold_original_to_tiles,
+            tile_predictions=tile_predictions,
+            original_images=original_images,
         )
 
-        for det in suppressed:
-            annotations.append(
-                {
-                    "id": ann_id,
-                    "image_id": original_meta.id,
-                    "category_id": det.category_id,
-                    "bbox": [det.x, det.y, det.width, det.height],
-                    "area": det.width * det.height,
-                    "score": det.score,
-                }
-            )
-            ann_id += 1
+    suppressed_by_image = apply_suppression_to_detections(
+        detections_by_image=projected_detections,
+        image_meta_by_id=image_meta_by_id,
+        params=suppression,
+    )
 
-        if create_mosaics:
+    dataset = build_dataset_from_detections(
+        base_coco=base_coco,
+        detections_by_image=suppressed_by_image,
+    )
+
+    if create_mosaics:
+        for original_name, tiles in fold_original_to_tiles.items():
+            original_meta = original_images.get(original_name)
+            if original_meta is None:
+                raise KeyError(f"Missing metadata for original image '{original_name}'.")
             output_path = output_images_dir / original_name
             _reconstruct_image(original_meta, tiles, output_path)
 
-    dataset = {
-        "info": base_coco.get("info", {}),
-        "licenses": base_coco.get("licenses", []),
-        "images": base_coco.get("images", []),
-        "annotations": annotations,
-        "categories": base_coco.get("categories", []),
-    }
     return dataset

@@ -111,8 +111,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--method",
         type=str,
-        default="cluster_diou_ait",
-        help="Suppression method (cluster_diou_ait, nms, bws, cluster_diou_nms, cluster_diou_bws).",
+        default="nms",
+        help="Suppression method (cluster_diou_ait [auto thresholds], nms, bws, cluster_diou_nms, cluster_diou_bws).",
     )
     parser.add_argument(
         "--affinity-threshold",
@@ -162,7 +162,16 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not create .bak backups before rewriting JSON files.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.method == "cluster_diou_ait":
+        print("[INFO] Método AIT detectado: ignorando thresholds externos.")
+        args.affinity_threshold = None
+        args.lambda_weight = None
+        args.iou_threshold = None
+        args.diou_threshold = None
+
+    return args
 
 
 def main() -> None:
@@ -193,6 +202,9 @@ def main() -> None:
         diou_threshold=args.diou_threshold,
         extra=extra_params,
     )
+
+    if params.method == "cluster_diou_ait":
+        print("[INFO] Usando Adaptive IoU Threshold (AIT): thresholds externos desativados.")
 
     total_annotations_before = 0
     total_annotations_after = 0
