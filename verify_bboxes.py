@@ -4,7 +4,7 @@ import argparse
 import json
 import random
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 
@@ -69,16 +69,94 @@ def load_ground_truth_annotations(annotations_path: Path) -> Dict[str, List[List
     return annotations
 
 
+def resolve_tiles_dir(dataset_root: Path, fold_name: str) -> Optional[Path]:
+    tiles_root = dataset_root / "tiles"
+    if not tiles_root.exists():
+        return None
+
+    target_norm = _normalize_fold_name(fold_name)
+    for candidate in tiles_root.iterdir():
+        if not candidate.is_dir():
+            continue
+        if _normalize_fold_name(candidate.name) == target_norm:
+            test_dir = candidate / "test"
+            if test_dir.exists():
+                return test_dir
+    return None
+
+
+def _parse_tile_filename(file_name: str) -> Tuple[str, int, int]:
+    stem = Path(file_name).stem
+    if "_tile_" not in stem:
+        raise ValueError(f"Tile file '{file_name}' does not contain '_tile_' segment.")
+    prefix, _, suffix = stem.partition("_tile_")
+    try:
+        offset_x_str, offset_y_str = suffix.split("_", 1)
+        offset_x = int(offset_x_str)
+        offset_y = int(offset_y_str)
+    except ValueError as exc:
+        raise ValueError(f"Could not parse offsets from tile file '{file_name}'.") from exc
+    return prefix, offset_x, offset_y
+
+
+def load_tile_boundaries(dataset_root: Path, fold_name: str, image_name: str) -> List[Tuple[int, int, int, int]]:
+    tiles_dir = resolve_tiles_dir(dataset_root, fold_name)
+    if tiles_dir is None:
+        return []
+
+    annotations_path = tiles_dir / "_annotations.coco.json"
+    tile_sizes: Dict[str, Tuple[int, int]] = {}
+    if annotations_path.exists():
+        with annotations_path.open("r", encoding="utf-8") as handle:
+            coco = json.load(handle)
+        for image_entry in coco.get("images", []):
+            file_name = str(image_entry["file_name"])
+            width = int(image_entry.get("width", 0))
+            height = int(image_entry.get("height", 0))
+            tile_sizes[file_name] = (width, height)
+
+    stem = Path(image_name).stem
+    candidate_dirs = [tiles_dir, tiles_dir / "images"]
+    boundaries: Dict[str, Tuple[int, int, int, int]] = {}
+    for directory in candidate_dirs:
+        if not directory.exists():
+            continue
+        for tile_path in directory.glob(f"{stem}_tile_*"):
+            if tile_path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+                continue
+            _, offset_x, offset_y = _parse_tile_filename(tile_path.name)
+            width, height = tile_sizes.get(tile_path.name, (0, 0))
+            if width <= 0 or height <= 0:
+                tile_img = cv2.imread(str(tile_path))
+                if tile_img is None:
+                    continue
+                height, width = tile_img.shape[:2]
+            boundaries[tile_path.name] = (offset_x, offset_y, width, height)
+
+    return list(boundaries.values())
+
+
 def draw_boxes(
     image_path: Path,
     annotations: List[List[float]],
     detections: List[Dict[str, float]],
     output_path: Path,
     score_threshold: float,
+    tile_boundaries: Optional[List[Tuple[int, int, int, int]]] = None,
 ) -> None:
     image = cv2.imread(str(image_path))
     if image is None:
         raise FileNotFoundError(f"Unable to read image at {image_path}")
+
+    if tile_boundaries:
+        overlay = image.copy()
+        for idx, (offset_x, offset_y, width, height) in enumerate(tile_boundaries):
+            color_value = 150 + (idx * 30) % 80
+            color = (color_value, color_value, color_value)
+            top_left = (int(offset_x), int(offset_y))
+            bottom_right = (int(offset_x + width), int(offset_y + height))
+            cv2.rectangle(overlay, top_left, bottom_right, color, 1)
+        image = cv2.addWeighted(overlay, 0.6, image, 0.4, 0)
 
     for bbox in annotations:
         x, y, w, h = bbox
@@ -125,6 +203,11 @@ def main() -> None:
     parser.add_argument("--model", type=str, default="yolov8")
     parser.add_argument("--fold", type=str, default="fold5")
     parser.add_argument("--image-name", type=str, help="Optional image file name to visualise.")
+    parser.add_argument(
+        "--image-number",
+        type=int,
+        help="Optional numeric identifier (image stem) to visualise, e.g., 788 for 788.jpg.",
+    )
     parser.add_argument("--score-threshold", type=float, default=0.25)
     parser.add_argument(
         "--output",
@@ -147,7 +230,21 @@ def main() -> None:
     gt_path = resolve_ground_truth_path(args.dataset_root, args.fold)
     ground_truth = load_ground_truth_annotations(gt_path)
 
-    image_name = args.image_name or pick_random_image(detections)
+    image_name: Optional[str] = None
+    if args.image_number is not None:
+        target_stem = str(args.image_number)
+        matches = [name for name in detections if Path(name).stem == target_stem]
+        if not matches:
+            raise FileNotFoundError(
+                f"No detections available for image number '{target_stem}'. "
+                "Ensure the COCO file contains a matching image."
+            )
+        image_name = matches[0]
+    elif args.image_name:
+        image_name = args.image_name
+    else:
+        image_name = pick_random_image(detections)
+
     if image_name not in detections:
         raise FileNotFoundError(f"No detections available for image '{image_name}'.")
 
@@ -174,6 +271,7 @@ def main() -> None:
         detections[image_name],
         args.output,
         score_threshold=args.score_threshold,
+        tile_boundaries=load_tile_boundaries(args.dataset_root, args.fold, image_name),
     )
 
 
