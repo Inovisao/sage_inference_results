@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import warnings
+from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional, Type
 
@@ -202,12 +203,12 @@ class FasterRCNNDetector(BaseDetector):
         # === Handle multiple checkpoint formats ===
         state_dict = None
         if isinstance(checkpoint, dict):
-            # Caso 1: dict com chaves padrão de state_dict
+            # Case 1: plain state_dict
             first_key = next(iter(checkpoint.keys())) if checkpoint else ""
             if any(first_key.startswith(prefix) for prefix in ["backbone.", "rpn.", "roi_heads.", "transform."]):
                 state_dict = checkpoint
 
-            # Caso 2: dict com wrapper de modelo
+            # Case 2: wrapped checkpoints
             elif "model_state_dict" in checkpoint:
                 state_dict = checkpoint["model_state_dict"]
             elif "state_dict" in checkpoint:
@@ -231,8 +232,26 @@ class FasterRCNNDetector(BaseDetector):
                 f"Found type={type(checkpoint)}, keys={list(checkpoint.keys()) if isinstance(checkpoint, dict) else 'N/A'}"
             )
 
+        if state_dict is not None:
+            prefixes = ("model.", "module.")
+            cleaned_state_dict = OrderedDict()
+            for key, value in state_dict.items():
+                new_key = key
+                for prefix in prefixes:
+                    if new_key.startswith(prefix):
+                        new_key = new_key[len(prefix):]
+                cleaned_state_dict[new_key] = value
+            state_dict = cleaned_state_dict
+
         # === Load the state_dict ===
-        model.load_state_dict(state_dict, strict=False)
+        load_result = model.load_state_dict(state_dict, strict=False)
+        missing = getattr(load_result, "missing_keys", [])
+        unexpected = getattr(load_result, "unexpected_keys", [])
+        if missing:
+            warnings.warn(f"Faster R-CNN checkpoint missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+        if unexpected:
+            warnings.warn(f"Faster R-CNN checkpoint has unexpected keys: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+
         model.to(self.torch_device or "cpu")
         model.eval()
         self._model = model

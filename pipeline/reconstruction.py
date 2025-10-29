@@ -7,7 +7,11 @@ from typing import Dict, List, Mapping, MutableMapping, Sequence
 import numpy as np
 from PIL import Image
 
+from supression.bws import bws as suppression_bws
 from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
+from supression.cluster_diou_bws import cluster_diou_bws
+from supression.cluster_diou_nms import cluster_diou_nms
+from supression.nms import nms as suppression_nms
 
 from .coco_utils import save_coco_json
 from .types import (
@@ -37,6 +41,12 @@ def _clip_detection(det: DetectionRecord, *, width: int, height: int) -> Detecti
     )
 
 
+# Supported suppression method names:
+#   - "cluster_diou_ait" / "adaptive_cluster_diou" / "ait"
+#   - "nms"
+#   - "bws"
+#   - "cluster_diou_nms" / "cluster_nms"
+#   - "cluster_diou_bws" / "cluster_bws"
 def _apply_nms_suppression(
     detections: Sequence[DetectionRecord],
     *,
@@ -46,6 +56,10 @@ def _apply_nms_suppression(
 ) -> List[DetectionRecord]:
     if not detections:
         return []
+
+    method = getattr(params, "method", "cluster_diou_ait")
+    method_key = str(method).lower().replace("-", "_")
+    extra = getattr(params, "extra", {}) or {}
 
     grouped: Dict[int, List[DetectionRecord]] = defaultdict(list)
     for det in detections:
@@ -73,35 +87,104 @@ def _apply_nms_suppression(
         )
         scores = np.array([det.score for det in class_dets], dtype=np.float32)
 
-        keep_indices = adaptive_cluster_diou_nms(
-            boxes,
-            scores,
-            T0=params.affinity_threshold,
-            alpha=params.lambda_weight,
-            score_ratio_thresh=params.score_ratio_threshold,
-            diou_dup_thresh=params.duplicate_iou_threshold,
-        )
-
-        for idx in keep_indices:
-            x1, y1, x2, y2 = boxes[idx].tolist()
-            score = float(scores[idx])
-            clipped = _clip_detection(
-                DetectionRecord(
-                    x=float(x1),
-                    y=float(y1),
-                    width=float(x2 - x1),
-                    height=float(y2 - y1),
-                    score=score,
-                    category_id=class_id,
-                ),
-                width=image_width,
-                height=image_height,
+        def _box_to_detection(box: Sequence[float], score: float) -> DetectionRecord | None:
+            x1, y1, x2, y2 = [float(v) for v in box]
+            detection = DetectionRecord(
+                x=x1,
+                y=y1,
+                width=float(x2 - x1),
+                height=float(y2 - y1),
+                score=float(score),
+                category_id=class_id,
             )
-            if clipped:
-                final.append(clipped)
+            return _clip_detection(detection, width=image_width, height=image_height)
+
+        if method_key in {"cluster_diou_ait", "adaptive_cluster_diou", "ait"}:
+            keep_indices = adaptive_cluster_diou_nms(
+                boxes,
+                scores,
+                T0=float(extra.get("T0", params.affinity_threshold)),
+                alpha=float(extra.get("alpha", params.lambda_weight)),
+                k=int(extra.get("k", 5)),
+                score_ratio_thresh=float(extra.get("score_ratio_threshold", params.score_ratio_threshold)),
+                diou_dup_thresh=float(extra.get("duplicate_iou_threshold", params.duplicate_iou_threshold)),
+            )
+            for idx in keep_indices:
+                clipped = _box_to_detection(boxes[idx], scores[idx])
+                if clipped:
+                    final.append(clipped)
+            continue
+
+        if method_key in {"nms"}:
+            iou_thresh = float(extra.get("iou_threshold", params.iou_threshold))
+            suppressed_boxes, suppressed_scores = suppression_nms(boxes, scores, iou_thresh=iou_thresh)
+            suppressed_boxes = np.atleast_2d(suppressed_boxes)
+            suppressed_scores = np.atleast_1d(suppressed_scores)
+            for box, score in zip(suppressed_boxes, suppressed_scores):
+                clipped = _box_to_detection(box, score)
+                if clipped:
+                    final.append(clipped)
+            continue
+
+        if method_key in {"bws"}:
+            iou_thresh = float(extra.get("iou_threshold", params.iou_threshold))
+            suppressed_boxes, suppressed_scores = suppression_bws(boxes, scores, iou_thresh=iou_thresh)
+            suppressed_boxes = np.atleast_2d(suppressed_boxes)
+            suppressed_scores = np.atleast_1d(suppressed_scores)
+            for box, score in zip(suppressed_boxes, suppressed_scores):
+                clipped = _box_to_detection(box, score)
+                if clipped:
+                    final.append(clipped)
+            continue
+
+        if method_key in {"cluster_diou_nms", "cluster_nms"}:
+            diou_thresh = float(extra.get("diou_threshold", params.diou_threshold))
+            suppressed_boxes, suppressed_scores = cluster_diou_nms(boxes, scores, diou_thresh=diou_thresh)
+            suppressed_boxes = np.atleast_2d(suppressed_boxes)
+            suppressed_scores = np.atleast_1d(suppressed_scores)
+            for box, score in zip(suppressed_boxes, suppressed_scores):
+                clipped = _box_to_detection(box, score)
+                if clipped:
+                    final.append(clipped)
+            continue
+
+        if method_key in {"cluster_diou_bws", "cluster_bws"}:
+            affinity_thresh = float(extra.get("affinity_threshold", params.affinity_threshold))
+            lambda_weight = float(extra.get("lambda_weight", params.lambda_weight))
+            suppressed_boxes, suppressed_scores = cluster_diou_bws(
+                boxes,
+                scores,
+                affinity_thresh=affinity_thresh,
+                lambda_weight=lambda_weight,
+            )
+            suppressed_boxes = np.atleast_2d(suppressed_boxes)
+            suppressed_scores = np.atleast_1d(suppressed_scores)
+            for box, score in zip(suppressed_boxes, suppressed_scores):
+                clipped = _box_to_detection(box, score)
+                if clipped:
+                    final.append(clipped)
+            continue
+
+        raise ValueError(f"Unsupported suppression method '{method}'.")
 
     final.sort(key=lambda det: det.score, reverse=True)
     return final
+
+
+def apply_suppression(
+    detections: Sequence[DetectionRecord],
+    *,
+    image_width: int,
+    image_height: int,
+    params: SuppressionParams,
+) -> List[DetectionRecord]:
+    """Public helper to run the configured suppression method."""
+    return _apply_nms_suppression(
+        detections,
+        image_width=image_width,
+        image_height=image_height,
+        params=params,
+    )
 
 
 def _project_tile_detections(tile: TileMetadata, detections: Sequence[DetectionRecord]) -> List[DetectionRecord]:

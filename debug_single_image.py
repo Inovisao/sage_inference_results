@@ -5,14 +5,14 @@ from pathlib import Path
 from typing import List, Sequence, Tuple
 
 import cv2
-import numpy as np
 
 from pipeline.data_prep import parse_tile_filename
 from pipeline.detectors import resolve_detector
+from pipeline.reconstruction import apply_suppression
 from pipeline.types import DetectionRecord, SuppressionParams
-from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
 
 DEFAULT_SUPPRESSION = SuppressionParams(
+    method='cluster_diou_ait',
     affinity_threshold=0.4,
     lambda_weight=0.3,
     score_ratio_threshold=0.85,
@@ -63,54 +63,6 @@ def _project_detections(
         )
     return projected
 
-
-def _apply_suppression(
-    detections: Sequence[DetectionRecord],
-    params: SuppressionParams,
-) -> List[DetectionRecord]:
-    if not detections:
-        return []
-
-    by_class: dict[int, List[DetectionRecord]] = {}
-    for det in detections:
-        by_class.setdefault(det.category_id, []).append(det)
-
-    suppressed: List[DetectionRecord] = []
-    for class_id, dets in by_class.items():
-        if len(dets) == 1:
-            suppressed.extend(dets)
-            continue
-
-        boxes = np.array(
-            [[det.x, det.y, det.x + det.width, det.y + det.height] for det in dets],
-            dtype=np.float32,
-        )
-        scores = np.array([det.score for det in dets], dtype=np.float32)
-
-        keep_indices = adaptive_cluster_diou_nms(
-            boxes,
-            scores,
-            T0=params.affinity_threshold,
-            alpha=params.lambda_weight,
-            score_ratio_thresh=params.score_ratio_threshold,
-            diou_dup_thresh=params.duplicate_iou_threshold,
-        )
-
-        for idx in keep_indices:
-            x1, y1, x2, y2 = boxes[idx].tolist()
-            score = float(scores[idx])
-            suppressed.append(
-                DetectionRecord(
-                    x=float(x1),
-                    y=float(y1),
-                    width=float(x2 - x1),
-                    height=float(y2 - y1),
-                    score=score,
-                    category_id=class_id,
-                )
-            )
-
-    return suppressed
 
 
 def _draw_detections(
@@ -224,10 +176,20 @@ def main() -> None:
         detector.close()
 
     print(f"[INFO] Total projected detections before suppression: {len(aggregated)}")
-    suppressed = _apply_suppression(aggregated, DEFAULT_SUPPRESSION)
+    original_image_path = dataset_root / "train" / args.image_name
+    original_image = cv2.imread(str(original_image_path))
+    if original_image is None:
+        raise FileNotFoundError(f"Unable to read original image '{original_image_path}'.")
+    image_height, image_width = original_image.shape[:2]
+
+    suppressed = apply_suppression(
+        aggregated,
+        image_width=image_width,
+        image_height=image_height,
+        params=DEFAULT_SUPPRESSION,
+    )
     print(f"[INFO] Detections after suppression: {len(suppressed)}")
 
-    original_image_path = dataset_root / "train" / args.image_name
     output_path = args.output
     _draw_detections(original_image_path, suppressed, output_path, score_threshold=args.threshold)
 

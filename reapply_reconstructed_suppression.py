@@ -6,92 +6,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
-import numpy as np
 from PIL import Image
 
+from pipeline.reconstruction import apply_suppression
 from pipeline.types import DetectionRecord, SuppressionParams
-from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
 
-
-def _clip_detection(det: DetectionRecord, *, width: float, height: float) -> DetectionRecord | None:
-    x1 = max(0.0, min(det.x, float(width)))
-    y1 = max(0.0, min(det.y, float(height)))
-    x2 = max(0.0, min(det.x + det.width, float(width)))
-    y2 = max(0.0, min(det.y + det.height, float(height)))
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return DetectionRecord(
-        x=x1,
-        y=y1,
-        width=x2 - x1,
-        height=y2 - y1,
-        score=det.score,
-        category_id=det.category_id,
-    )
-
-
-def _apply_suppression(
-    detections: Iterable[DetectionRecord],
-    *,
-    image_width: float,
-    image_height: float,
-    params: SuppressionParams,
-) -> List[DetectionRecord]:
-    grouped: Dict[int, List[DetectionRecord]] = defaultdict(list)
-    for det in detections:
-        grouped[det.category_id].append(det)
-
-    suppressed: List[DetectionRecord] = []
-    for class_id, class_dets in grouped.items():
-        if len(class_dets) == 1:
-            clipped = _clip_detection(class_dets[0], width=image_width, height=image_height)
-            if clipped:
-                suppressed.append(clipped)
-            continue
-
-        boxes = np.array(
-            [
-                [
-                    det.x,
-                    det.y,
-                    det.x + det.width,
-                    det.y + det.height,
-                ]
-                for det in class_dets
-            ],
-            dtype=np.float32,
-        )
-        scores = np.array([det.score for det in class_dets], dtype=np.float32)
-
-        keep_indices = adaptive_cluster_diou_nms(
-            boxes,
-            scores,
-            T0=params.affinity_threshold,
-            alpha=params.lambda_weight,
-            score_ratio_thresh=params.score_ratio_threshold,
-            diou_dup_thresh=params.duplicate_iou_threshold,
-        )
-
-        for idx in keep_indices:
-            x1, y1, x2, y2 = boxes[idx].tolist()
-            score = float(scores[idx])
-            clipped = _clip_detection(
-                DetectionRecord(
-                    x=float(x1),
-                    y=float(y1),
-                    width=float(x2 - x1),
-                    height=float(y2 - y1),
-                    score=score,
-                    category_id=class_id,
-                ),
-                width=image_width,
-                height=image_height,
-            )
-            if clipped:
-                suppressed.append(clipped)
-
-    suppressed.sort(key=lambda det: det.score, reverse=True)
-    return suppressed
 
 
 def _ensure_image_dimensions(image_entry: Dict[str, object], images_dir: Path) -> Tuple[int, int]:
@@ -153,7 +72,7 @@ def _reapply_for_file(
             for ann in anns
         ]
 
-        suppressed = _apply_suppression(
+        suppressed = apply_suppression(
             detections,
             image_width=width,
             image_height=height,
@@ -181,7 +100,7 @@ def _reapply_for_file(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Reapply adaptive suppression to annotations produced in results/reconstructed.",
+        description="Reapply suppression to annotations produced in results/reconstructed.",
     )
     parser.add_argument(
         "--root",
@@ -190,28 +109,53 @@ def _parse_args() -> argparse.Namespace:
         help="Root directory that contains model/fold subdirectories.",
     )
     parser.add_argument(
+        "--method",
+        type=str,
+        default="cluster_diou_ait",
+        help="Suppression method (cluster_diou_ait, nms, bws, cluster_diou_nms, cluster_diou_bws).",
+    )
+    parser.add_argument(
         "--affinity-threshold",
         type=float,
         default=0.4,
-        help="Base DIoU threshold (T0).",
+        help="Affinity threshold used by cluster_diou_* variants.",
     )
     parser.add_argument(
         "--lambda-weight",
         type=float,
         default=0.3,
-        help="Alpha value used to adapt the threshold.",
+        help="Lambda weight for adaptive/cluster suppression heuristics.",
     )
     parser.add_argument(
         "--score-ratio-threshold",
         type=float,
         default=0.85,
-        help="Minimum score ratio to classify a box as a duplicate.",
+        help="Minimum score ratio to classify a box as a duplicate (cluster_diou_ait).",
     )
     parser.add_argument(
         "--duplicate-iou-threshold",
         type=float,
         default=0.5,
-        help="DIoU threshold used to mark strong duplicates.",
+        help="DIoU threshold used to mark strong duplicates (cluster_diou_ait).",
+    )
+    parser.add_argument(
+        "--iou-threshold",
+        type=float,
+        default=0.5,
+        help="IoU threshold for NMS/BWS methods.",
+    )
+    parser.add_argument(
+        "--diou-threshold",
+        type=float,
+        default=0.5,
+        help="DIoU threshold for cluster_diou_nms.",
+    )
+    parser.add_argument(
+        "--extra",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Additional suppression parameters (repeatable).",
     )
     parser.add_argument(
         "--no-backup",
@@ -228,11 +172,26 @@ def main() -> None:
     if not root.exists():
         raise FileNotFoundError(f"Results root '{root}' not found.")
 
+    extra_params = {}
+    for item in args.extra:
+        if '=' not in item:
+            raise ValueError(f"Invalid extra parameter format: {item!r}. Expected key=value.")
+        key, value = item.split('=', 1)
+        try:
+            parsed = float(value)
+        except ValueError as exc:
+            raise ValueError(f"Could not parse extra parameter '{item}'.") from exc
+        extra_params[key.strip()] = parsed
+
     params = SuppressionParams(
+        method=args.method,
         affinity_threshold=args.affinity_threshold,
         lambda_weight=args.lambda_weight,
         score_ratio_threshold=args.score_ratio_threshold,
         duplicate_iou_threshold=args.duplicate_iou_threshold,
+        iou_threshold=args.iou_threshold,
+        diou_threshold=args.diou_threshold,
+        extra=extra_params,
     )
 
     total_annotations_before = 0

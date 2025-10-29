@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from pipeline import PipelineSettings, SageInferencePipeline
+from config_inference import load_config
+from pipeline import SageInferencePipeline
 import time
 
 def main() -> None:
@@ -10,13 +11,7 @@ def main() -> None:
     inicio = time.time()
 
     project_root = Path(__file__).resolve().parent
-    settings = PipelineSettings(
-        dataset_root=project_root / "dataset",
-        models_root=project_root / "model_checkpoints",
-        results_root=project_root / "results",
-        originals_root=project_root / "original_images_test",
-        create_mosaics=True,
-    )
+    settings = load_config(project_root)
     pipeline = SageInferencePipeline(settings)
     pipeline.run()
 

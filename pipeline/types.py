@@ -47,12 +47,16 @@ class DetectionRecord:
 
 @dataclass(frozen=True)
 class SuppressionParams:
-    """Parameters that control the hybrid suppression stage."""
+    """Parameters that control the suppression stage."""
 
+    method: str = "cluster_diou_ait"
     affinity_threshold: float = 0.5
     lambda_weight: float = 0.6
     score_ratio_threshold: float = 0.85
     duplicate_iou_threshold: float = 0.5
+    iou_threshold: float = 0.5
+    diou_threshold: float = 0.5
+    extra: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass

@@ -24,7 +24,9 @@ def extract_original_images(coco: Mapping[str, object]) -> Dict[str, OriginalIma
     images = {}
     for entry in coco.get("images", []):
         file_name = str(entry["file_name"])
-        stem = Path(file_name).stem
+        extra = entry.get("extra", {}) if isinstance(entry.get("extra"), dict) else {}
+        source_name = extra.get("name") or file_name
+        stem = Path(source_name).stem
         images[file_name] = OriginalImage(
             id=int(entry["id"]),
             file_name=file_name,

@@ -28,6 +28,9 @@ class PipelineSettings:
     create_mosaics: bool = False
     detection_thresholds: Mapping[str, float] = field(default_factory=dict)
     model_class_offsets: Mapping[str, int] = field(default_factory=dict)
+    enabled_models: Optional[Sequence[str]] = None
+    detector_name_aliases: Mapping[str, str] = field(default_factory=dict)
+    model_num_classes: Mapping[str, int] = field(default_factory=dict)
 
 
 class SageInferencePipeline:
@@ -43,6 +46,11 @@ class SageInferencePipeline:
         self.create_mosaics = settings.create_mosaics
         self.detection_thresholds = {k.lower(): v for k, v in settings.detection_thresholds.items()}
         self.model_class_offsets = {k.lower(): v for k, v in settings.model_class_offsets.items()}
+        self.model_num_classes = {k.lower(): v for k, v in settings.model_num_classes.items()}
+        self.enabled_models = None
+        if settings.enabled_models:
+            self.enabled_models = {name.lower() for name in settings.enabled_models}
+        self.detector_aliases = {k.lower(): v.lower() for k, v in settings.detector_name_aliases.items()}
 
         # Defaults for known detectors
         self.detection_thresholds.setdefault("yolov8", 0.25)
@@ -130,6 +138,18 @@ class SageInferencePipeline:
 
         specs = [spec for spec in specs_by_name.values() if spec.fold_to_path]
         specs.sort(key=lambda item: item.name.lower())
+
+        if self.enabled_models is not None:
+            filtered: List[ModelWeights] = []
+            discovered = {spec.name.lower() for spec in specs}
+            missing = sorted(self.enabled_models - discovered)
+            for spec in specs:
+                if spec.name.lower() in self.enabled_models:
+                    filtered.append(spec)
+            for name in missing:
+                print(f"[WARN] Enabled model '{name}' not found under '{self.models_root}'.")
+            specs = filtered
+
         return specs
 
     @staticmethod
@@ -146,12 +166,23 @@ class SageInferencePipeline:
         return None
 
     def _instantiate_detector(self, model_name: str, weight_path: Path) -> BaseDetector:
-        detector_cls = resolve_detector(model_name)
-        threshold = self.detection_thresholds.get(model_name.lower(), detector_cls.default_threshold)
-        class_offset = self.model_class_offsets.get(model_name.lower(), 0)
+        lookup_name = self.detector_aliases.get(model_name.lower(), model_name)
+        detector_cls = resolve_detector(lookup_name)
+        lookup_key = lookup_name.lower()
+        model_key = model_name.lower()
+        threshold = (
+            self.detection_thresholds.get(model_key)
+            or self.detection_thresholds.get(lookup_key, detector_cls.default_threshold)
+        )
+        class_offset = self.model_class_offsets.get(model_key, self.model_class_offsets.get(lookup_key, 0))
         extra_kwargs = {}
         if detector_cls.model_name in {"faster", "fasterrcnn"}:
-            extra_kwargs["num_classes"] = self.num_classes
+            num_classes = (
+                self.model_num_classes.get(model_key)
+                or self.model_num_classes.get(lookup_key)
+                or self.num_classes
+            )
+            extra_kwargs["num_classes"] = num_classes
         detector = detector_cls(weight_path, class_id_offset=class_offset, **extra_kwargs)
         detector.threshold = threshold  # convenience attribute
         return detector
