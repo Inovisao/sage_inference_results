@@ -11,8 +11,8 @@ import cv2
 from .coco_utils import build_image_lookup_by_stem, extract_original_images, load_coco_json, save_coco_json
 from .data_prep import build_tile_index, discover_fold_directories, prepare_original_test_split
 from .detectors import BaseDetector, resolve_detector
-from .reconstruction import build_prediction_dataset
-from .types import DetectionRecord, ModelWeights, SuppressionParams
+from .reconstruction import build_prediction_dataset, detect_tile_orientation
+from .types import DetectionRecord, ModelWeights, OriginalToTiles, SuppressionParams
 
 _WEIGHT_SUFFIXES = {".pt", ".pth", ".onnx"}
 _FOLD_REGEX = re.compile(r"fold[_\-]?(\d+)", re.IGNORECASE)
@@ -187,6 +187,52 @@ class SageInferencePipeline:
         detector.threshold = threshold  # convenience attribute
         return detector
 
+    def _detect_tile_orientations(
+        self,
+        original_to_tiles: OriginalToTiles,
+        originals_output_dir: Path,
+    ) -> Dict[str, int]:
+        """
+        Detect rotation mismatches between stored originals and their tiles.
+        Returns a mapping of original image names to the required rotation (currently only 180°).
+        """
+
+        orientation: Dict[str, int] = {}
+        for original_name, tiles in original_to_tiles.items():
+            if not tiles:
+                continue
+
+            original_path = originals_output_dir / original_name
+            original_image = cv2.imread(str(original_path))
+            if original_image is None:
+                fallback_path = self.train_images_dir / original_name
+                original_image = cv2.imread(str(fallback_path))
+
+            if original_image is None:
+                print(
+                    f"[WARN] Unable to read original image '{original_name}' for orientation detection "
+                    f"(looked in '{original_path}' and dataset train folder)."
+                )
+                continue
+
+            sample_tile = tiles[0]
+            try:
+                angle = detect_tile_orientation(
+                    original_image,
+                    tile_path=sample_tile.path,
+                    offset_x=sample_tile.offset_x,
+                    offset_y=sample_tile.offset_y,
+                )
+            except Exception as exc:
+                print(f"[WARN] Orientation detection failed for '{original_name}': {exc}")
+                continue
+
+            if angle:
+                orientation[original_name] = angle
+                print(f"[INFO]     Detected {angle}° rotation gap for '{original_name}'.")
+
+        return orientation
+
     def run(self) -> None:
         folds = discover_fold_directories(self.tiles_root)
         if not folds:
@@ -219,6 +265,12 @@ class SageInferencePipeline:
 
             if not model_specs:
                 continue
+
+            orientation_by_image = self._detect_tile_orientations(original_to_tiles, originals_output_dir)
+            if orientation_by_image:
+                print(
+                    f"[INFO]  +- Rotation compensation needed for {len(orientation_by_image)} original images."
+                )
 
             for spec in model_specs:
                 weight_path = spec.get(fold_idx)
@@ -286,6 +338,7 @@ class SageInferencePipeline:
                     base_coco=filtered_coco,
                     output_images_dir=images_dir,
                     create_mosaics=self.create_mosaics,
+                    orientation_by_image=orientation_by_image,
                 )
                 annotations_output = reconstructed_dir / "_annotations.coco.json"
                 save_coco_json(dataset, annotations_output)

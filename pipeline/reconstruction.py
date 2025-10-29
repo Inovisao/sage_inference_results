@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Mapping, MutableMapping, Sequence
+from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -214,6 +215,76 @@ def _reconstruct_image(original: OriginalImage, tiles: Sequence[TileMetadata], o
     canvas.save(output_path)
 
 
+def detect_tile_orientation(
+    original_image: np.ndarray,
+    *,
+    tile_path: Path,
+    offset_x: int,
+    offset_y: int,
+) -> int:
+    """
+    Determine whether tiles align with the stored original image (0°) or require a 180° rotation.
+
+    Returns the detected angle (0 or 180 degrees). Defaults to 0 if no better match is found.
+    """
+
+    tile_image = cv2.imread(str(tile_path))
+    if tile_image is None:
+        raise FileNotFoundError(f"Unable to read tile image '{tile_path}'.")
+    tile_h, tile_w = tile_image.shape[:2]
+
+    candidates = {
+        0: original_image,
+        180: cv2.rotate(original_image, cv2.ROTATE_180),
+    }
+
+    best_angle = 0
+    best_score = float("inf")
+    for angle, candidate in candidates.items():
+        if offset_y + tile_h > candidate.shape[0] or offset_x + tile_w > candidate.shape[1]:
+            continue
+        region = candidate[offset_y:offset_y + tile_h, offset_x:offset_x + tile_w]
+        if region.shape[:2] != (tile_h, tile_w):
+            continue
+        diff = cv2.absdiff(region, tile_image)
+        score = float(diff.mean())
+        if score < best_score:
+            best_score = score
+            best_angle = angle
+
+    return best_angle
+
+
+def remap_detections_by_rotation(
+    detections: Sequence[DetectionRecord],
+    angle: int,
+    *,
+    image_width: int,
+    image_height: int,
+) -> List[DetectionRecord]:
+    """Remap detections from a rotated frame (currently supports 180°) back to the stored orientation."""
+    if angle == 0:
+        return list(detections)
+    if angle != 180:
+        raise NotImplementedError(f"Unsupported rotation angle {angle}.")
+
+    remapped: List[DetectionRecord] = []
+    for det in detections:
+        new_x = image_width - (det.x + det.width)
+        new_y = image_height - (det.y + det.height)
+        remapped.append(
+            DetectionRecord(
+                x=new_x,
+                y=new_y,
+                width=det.width,
+                height=det.height,
+                score=det.score,
+                category_id=det.category_id,
+            )
+        )
+    return remapped
+
+
 def build_prediction_dataset(
     *,
     fold_original_to_tiles: OriginalToTiles,
@@ -223,6 +294,7 @@ def build_prediction_dataset(
     base_coco: Mapping[str, object],
     output_images_dir: Path,
     create_mosaics: bool = False,
+    orientation_by_image: Optional[Mapping[str, int]] = None,
 ) -> Mapping[str, object]:
     """
     Combine tile detections into original-image predictions and return a COCO-like dict.
@@ -247,6 +319,16 @@ def build_prediction_dataset(
             image_height=original_meta.height,
             params=suppression,
         )
+
+        if orientation_by_image:
+            angle = int(orientation_by_image.get(original_name, 0))
+            if angle:
+                suppressed = remap_detections_by_rotation(
+                    suppressed,
+                    angle,
+                    image_width=int(original_meta.width),
+                    image_height=int(original_meta.height),
+                )
 
         for det in suppressed:
             annotations.append(

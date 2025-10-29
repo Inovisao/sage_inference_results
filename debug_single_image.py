@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import List, Sequence, Set, Tuple
 
 import cv2
 
 from pipeline.data_prep import parse_tile_filename
 from pipeline.detectors import resolve_detector
-from pipeline.reconstruction import apply_suppression
+from pipeline.reconstruction import (
+    apply_suppression,
+    detect_tile_orientation,
+    remap_detections_by_rotation,
+)
 from pipeline.types import DetectionRecord, SuppressionParams
 
 DEFAULT_SUPPRESSION = SuppressionParams(
@@ -19,27 +23,52 @@ DEFAULT_SUPPRESSION = SuppressionParams(
     duplicate_iou_threshold=0.5,
 )
 
-def _discover_tiles_for_image(test_dir: Path, target_stem: str) -> List[Tuple[Path, int, int]]:
-    """Return a sorted list of (tile_path, offset_x, offset_y) for a given image stem."""
+
+def _stem_candidates(image_name: str) -> Set[str]:
+    """Return possible tile stems that correspond to the original image name."""
+    stem = Path(image_name).stem
+    candidates: Set[str] = {stem}
+
+    # Handle Roboflow-style names (e.g., 123_jpg.rf.<hash>) by keeping the prefix.
+    markers = (
+        "_jpg.rf.",
+        "_jpeg.rf.",
+        "_png.rf.",
+        "_bmp.rf.",
+        "_tif.rf.",
+        "_tiff.rf.",
+    )
+    for marker in markers:
+        if marker in stem:
+            candidates.add(stem.split(marker, 1)[0])
+            break
+
+    return candidates
+
+
+def _discover_tiles_for_image(test_dir: Path, target_name: str) -> List[Tuple[Path, int, int]]:
+    """Return a sorted list of (tile_path, offset_x, offset_y) for a given original image name."""
     candidate_files = []
     tiles_dir = test_dir
     images_dir = test_dir / "images"
+    valid_stems = _stem_candidates(target_name)
 
     for directory in [tiles_dir, images_dir]:
         if not directory.exists():
             continue
         for path in sorted(directory.glob("*.jpg")):
             stem, offset_x, offset_y = parse_tile_filename(path.name)
-            if stem == target_stem:
+            if stem in valid_stems:
                 candidate_files.append((path, offset_x, offset_y))
 
     if not candidate_files:
         raise FileNotFoundError(
-            f"No tiles found for image '{target_stem}' under '{test_dir}'. "
+            f"No tiles found for image '{target_name}' under '{test_dir}'. "
             "Ensure the fold/test split contains the target image."
         )
 
-    candidate_files.sort(key=lambda item: (item[2], item[1]))  # sort by offset_y, then offset_x
+    # sort by offset_y, then offset_x
+    candidate_files.sort(key=lambda item: (item[2], item[1]))
     return candidate_files
 
 
@@ -64,7 +93,6 @@ def _project_detections(
     return projected
 
 
-
 def _draw_detections(
     image_path: Path,
     detections: Sequence[DetectionRecord],
@@ -73,7 +101,8 @@ def _draw_detections(
 ) -> None:
     image = cv2.imread(str(image_path))
     if image is None:
-        raise FileNotFoundError(f"Unable to read original image at '{image_path}'.")
+        raise FileNotFoundError(
+            f"Unable to read original image at '{image_path}'.")
 
     for det in detections:
         if det.score < score_threshold:
@@ -103,8 +132,10 @@ def main() -> None:
         description="Run inference on all tiles of a single image and visualise the suppressed detections."
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
-    parser.add_argument("--fold", type=str, default="fold_1", help="Fold identifier (e.g., fold_1)")
-    parser.add_argument("--image-name", type=str, default="788.jpg", help="Original image file name, e.g., 100.jpg")
+    parser.add_argument("--fold", type=str, default="fold_1",
+                        help="Fold identifier (e.g., fold_1)")
+    parser.add_argument("--image-name", type=str, default="788_jpg.rf.cdbcd82b02f0185013ab4025fb098e98.jpg",
+                        help="Original image file name, e.g., 100.jpg")
     parser.add_argument(
         "--model",
         type=str,
@@ -117,7 +148,8 @@ def main() -> None:
         default=Path("model_checkpoints/fold_3/YOLOV8/best.pt"),
         help="Path to the trained weight file (.pt/.pth)",
     )
-    parser.add_argument("--threshold", type=float, default=0.25, help="Confidence threshold")
+    parser.add_argument("--threshold", type=float,
+                        default=0.25, help="Confidence threshold")
     parser.add_argument(
         "--output",
         type=Path,
@@ -131,12 +163,11 @@ def main() -> None:
     if not fold_dir.exists():
         raise FileNotFoundError(f"Fold directory '{fold_dir}' not found.")
 
-    image_stem = Path(args.image_name).stem
-    tiles = _discover_tiles_for_image(fold_dir, image_stem)
+    tiles = _discover_tiles_for_image(fold_dir, args.image_name)
     print(f"[INFO] Located {len(tiles)} tiles for image '{args.image_name}'.")
 
     detector_cls = resolve_detector(args.model)
-    
+
     # Handle Faster R-CNN specific requirements
     extra_kwargs = {}
     if detector_cls.model_name in {"faster", "fasterrcnn"}:
@@ -154,7 +185,7 @@ def main() -> None:
                 extra_kwargs["num_classes"] = 2  # default
         else:
             extra_kwargs["num_classes"] = 2  # default
-    
+
     detector = detector_cls(args.weight, **extra_kwargs)
     print(f"[INFO] Loaded detector '{args.model}' from '{args.weight}'.")
 
@@ -175,12 +206,25 @@ def main() -> None:
     finally:
         detector.close()
 
-    print(f"[INFO] Total projected detections before suppression: {len(aggregated)}")
+    print(
+        f"[INFO] Total projected detections before suppression: {len(aggregated)}")
     original_image_path = dataset_root / "train" / args.image_name
     original_image = cv2.imread(str(original_image_path))
     if original_image is None:
-        raise FileNotFoundError(f"Unable to read original image '{original_image_path}'.")
+        raise FileNotFoundError(
+            f"Unable to read original image '{original_image_path}'.")
     image_height, image_width = original_image.shape[:2]
+
+    sample_tile_path, sample_offset_x, sample_offset_y = tiles[0]
+    angle = detect_tile_orientation(
+        original_image,
+        tile_path=sample_tile_path,
+        offset_x=sample_offset_x,
+        offset_y=sample_offset_y,
+    )
+    if angle != 0:
+        print(f"[WARN] Detected a {angle}° rotation between tiles and stored original. "
+              "Remapping detections to compensate.")
 
     suppressed = apply_suppression(
         aggregated,
@@ -189,9 +233,16 @@ def main() -> None:
         params=DEFAULT_SUPPRESSION,
     )
     print(f"[INFO] Detections after suppression: {len(suppressed)}")
+    suppressed = remap_detections_by_rotation(
+        suppressed,
+        angle,
+        image_width=image_width,
+        image_height=image_height,
+    )
 
     output_path = args.output
-    _draw_detections(original_image_path, suppressed, output_path, score_threshold=args.threshold)
+    _draw_detections(original_image_path, suppressed,
+                     output_path, score_threshold=args.threshold)
 
 
 if __name__ == "__main__":
