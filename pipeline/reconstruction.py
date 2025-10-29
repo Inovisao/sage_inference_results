@@ -204,14 +204,40 @@ def _project_tile_detections(tile: TileMetadata, detections: Sequence[DetectionR
     return projected
 
 
-def _reconstruct_image(original: OriginalImage, tiles: Sequence[TileMetadata], output_path: Path) -> None:
+def _reconstruct_image(
+    original: OriginalImage,
+    tiles: Sequence[TileMetadata],
+    output_path: Path,
+    *,
+    angle: int = 0,
+    original_image_path: Optional[Path] = None,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if original_image_path and original_image_path.exists():
+        with Image.open(original_image_path) as original_image:
+            image_to_save = original_image.copy()
+            # The stored original is already in the desired orientation for visualisation.
+            image_to_save.save(output_path)
+        return
+
     canvas = Image.new("RGB", (int(original.width), int(original.height)))
     for tile in tiles:
         with Image.open(tile.path) as tile_img:
             if tile_img.mode != "RGB":
                 tile_img = tile_img.convert("RGB")
-            canvas.paste(tile_img, (int(tile.offset_x), int(tile.offset_y)))
+            tile_width = int(tile.width) if int(tile.width) > 0 else tile_img.width
+            tile_height = int(tile.height) if int(tile.height) > 0 else tile_img.height
+            if angle == 180:
+                # Rotate the tile back to the stored original orientation.
+                tile_img = tile_img.transpose(Image.ROTATE_180)
+                paste_x = int(original.width - (tile.offset_x + tile_width))
+                paste_y = int(original.height - (tile.offset_y + tile_height))
+            elif angle == 0:
+                paste_x = int(tile.offset_x)
+                paste_y = int(tile.offset_y)
+            else:
+                raise NotImplementedError(f"Unsupported rotation angle {angle}.")
+            canvas.paste(tile_img, (paste_x, paste_y))
     canvas.save(output_path)
 
 
@@ -295,6 +321,7 @@ def build_prediction_dataset(
     output_images_dir: Path,
     create_mosaics: bool = False,
     orientation_by_image: Optional[Mapping[str, int]] = None,
+    originals_dir: Optional[Path] = None,
 ) -> Mapping[str, object]:
     """
     Combine tile detections into original-image predictions and return a COCO-like dict.
@@ -345,7 +372,21 @@ def build_prediction_dataset(
 
         if create_mosaics:
             output_path = output_images_dir / original_name
-            _reconstruct_image(original_meta, tiles, output_path)
+            angle = 0
+            if orientation_by_image:
+                angle = int(orientation_by_image.get(original_name, 0))
+            original_path = None
+            if originals_dir:
+                candidate = originals_dir / original_name
+                if candidate.exists():
+                    original_path = candidate
+            _reconstruct_image(
+                original_meta,
+                tiles,
+                output_path,
+                angle=angle,
+                original_image_path=original_path,
+            )
 
     dataset = {
         "info": base_coco.get("info", {}),

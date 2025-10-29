@@ -6,6 +6,7 @@ from typing import List, Sequence, Set, Tuple
 
 import cv2
 
+from pipeline.coco_utils import load_coco_json
 from pipeline.data_prep import parse_tile_filename
 from pipeline.detectors import resolve_detector
 from pipeline.reconstruction import (
@@ -96,6 +97,7 @@ def _project_detections(
 def _draw_detections(
     image_path: Path,
     detections: Sequence[DetectionRecord],
+    ground_truths: Sequence[Tuple[float, float, float, float]],
     output_path: Path,
     score_threshold: float,
 ) -> None:
@@ -122,9 +124,49 @@ def _draw_detections(
             2,
         )
 
+    for bbox in ground_truths:
+        gx1 = int(bbox[0])
+        gy1 = int(bbox[1])
+        gx2 = int(bbox[0] + bbox[2])
+        gy2 = int(bbox[1] + bbox[3])
+        cv2.rectangle(image, (gx1, gy1), (gx2, gy2), (0, 255, 255), 2)
+        cv2.putText(
+            image,
+            "GT",
+            (gx1, max(0, gy1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+        )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), image)
     print(f"[INFO] Saved visualization to {output_path}")
+
+
+def _load_ground_truth_boxes(dataset_root: Path, image_name: str) -> List[Tuple[float, float, float, float]]:
+    coco_path = dataset_root / "train" / "_annotations.coco.json"
+    if not coco_path.exists():
+        return []
+
+    coco = load_coco_json(coco_path)
+    images = {str(img["file_name"]): int(img["id"])
+              for img in coco.get("images", [])}
+    image_id = images.get(image_name)
+    if image_id is None:
+        return []
+
+    boxes: List[Tuple[float, float, float, float]] = []
+    for ann in coco.get("annotations", []):
+        if int(ann.get("image_id", -1)) != image_id:
+            continue
+        bbox = ann.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+        x, y, w, h = (float(v) for v in bbox)
+        boxes.append((x, y, w, h))
+    return boxes
 
 
 def main() -> None:
@@ -132,9 +174,9 @@ def main() -> None:
         description="Run inference on all tiles of a single image and visualise the suppressed detections."
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
-    parser.add_argument("--fold", type=str, default="fold_1",
+    parser.add_argument("--fold", type=str, default="fold_5",
                         help="Fold identifier (e.g., fold_1)")
-    parser.add_argument("--image-name", type=str, default="788_jpg.rf.cdbcd82b02f0185013ab4025fb098e98.jpg",
+    parser.add_argument("--image-name", type=str, default="7_jpg.rf.4ac9339927b6e2999dd0cb9815a274e7.jpg",
                         help="Original image file name, e.g., 100.jpg")
     parser.add_argument(
         "--model",
@@ -240,8 +282,16 @@ def main() -> None:
         image_height=image_height,
     )
 
+    ground_truth_boxes = _load_ground_truth_boxes(
+        dataset_root, args.image_name)
+    if ground_truth_boxes:
+        print(
+            f"[INFO] Loaded {len(ground_truth_boxes)} ground-truth boxes for comparison.")
+    else:
+        print("[INFO] No ground-truth boxes found for this image.")
+
     output_path = args.output
-    _draw_detections(original_image_path, suppressed,
+    _draw_detections(original_image_path, suppressed, ground_truth_boxes,
                      output_path, score_threshold=args.threshold)
 
 

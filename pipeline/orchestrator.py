@@ -8,6 +8,12 @@ from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
 
 import cv2
 
+from calcula_estatisticas.evaluate_reconstructed import (
+    evaluate_fold as _evaluate_fold,
+    write_details_csv as _write_details_csv,
+    write_results_csv as _write_results_csv,
+)
+
 from .coco_utils import build_image_lookup_by_stem, extract_original_images, load_coco_json, save_coco_json
 from .data_prep import build_tile_index, discover_fold_directories, prepare_original_test_split
 from .detectors import BaseDetector, resolve_detector
@@ -47,10 +53,15 @@ class SageInferencePipeline:
         self.detection_thresholds = {k.lower(): v for k, v in settings.detection_thresholds.items()}
         self.model_class_offsets = {k.lower(): v for k, v in settings.model_class_offsets.items()}
         self.model_num_classes = {k.lower(): v for k, v in settings.model_num_classes.items()}
-        self.enabled_models = None
-        if settings.enabled_models:
-            self.enabled_models = {name.lower() for name in settings.enabled_models}
         self.detector_aliases = {k.lower(): v.lower() for k, v in settings.detector_name_aliases.items()}
+
+        self.enabled_models = None
+        self._requested_models: Optional[set[str]] = None
+        if settings.enabled_models:
+            requested = {name.lower() for name in settings.enabled_models}
+            normalized = {self.detector_aliases.get(name, name) for name in requested}
+            self.enabled_models = normalized
+            self._requested_models = requested
 
         # Defaults for known detectors
         self.detection_thresholds.setdefault("yolov8", 0.25)
@@ -82,6 +93,13 @@ class SageInferencePipeline:
 
         self.categories = self.train_coco.get("categories", [])
         self.num_classes = self._infer_num_classes(self.categories)
+
+        # Prepare results directory and reset aggregated outputs for this run.
+        self.results_root.mkdir(parents=True, exist_ok=True)
+        self._results_csv_path = self.results_root / "results.csv"
+        if self._results_csv_path.exists():
+            self._results_csv_path.unlink()
+        self._aggregate_rows: List[List[str]] = []
 
     @staticmethod
     def _infer_num_classes(categories: Sequence[Mapping[str, object]]) -> int:
@@ -142,12 +160,21 @@ class SageInferencePipeline:
         if self.enabled_models is not None:
             filtered: List[ModelWeights] = []
             discovered = {spec.name.lower() for spec in specs}
-            missing = sorted(self.enabled_models - discovered)
+            missing = sorted(name for name in self.enabled_models if name not in discovered)
             for spec in specs:
                 if spec.name.lower() in self.enabled_models:
                     filtered.append(spec)
             for name in missing:
                 print(f"[WARN] Enabled model '{name}' not found under '{self.models_root}'.")
+            if self._requested_models:
+                unresolved: List[str] = []
+                for requested in self._requested_models:
+                    normalized = self.detector_aliases.get(requested, requested)
+                    if normalized not in discovered:
+                        unresolved.append(requested)
+                for name in sorted(unresolved):
+                    if name not in missing:
+                        print(f"[WARN] Enabled model alias '{name}' not found under '{self.models_root}'.")
             specs = filtered
 
         return specs
@@ -232,6 +259,37 @@ class SageInferencePipeline:
                 print(f"[INFO]     Detected {angle}° rotation gap for '{original_name}'.")
 
         return orientation
+
+    def _evaluate_predictions(
+        self,
+        *,
+        model_name: str,
+        fold_name: str,
+        pred_path: Path,
+        gt_path: Path,
+    ) -> None:
+        per_image, summary = _evaluate_fold(pred_path, gt_path)
+        _write_details_csv(self.results_root, model_name, fold_name, per_image)
+        print(
+            f"[INFO]  +- Evaluation {model_name} / {fold_name}: "
+            f"precision={summary.precision:.3f}, recall={summary.recall:.3f}, "
+            f"mAP={summary.map_all:.3f}"
+        )
+        self._aggregate_rows.append(
+            [
+                model_name,
+                fold_name,
+                str(len(per_image)),
+                f"{summary.precision:.6f}",
+                f"{summary.recall:.6f}",
+                f"{summary.f1:.6f}",
+                f"{summary.map_all:.6f}",
+                f"{summary.map50:.6f}",
+                f"{summary.map75:.6f}",
+                f"{summary.mae:.6f}",
+                f"{summary.rmse:.6f}",
+            ]
+        )
 
     def run(self) -> None:
         folds = discover_fold_directories(self.tiles_root)
@@ -339,6 +397,7 @@ class SageInferencePipeline:
                     output_images_dir=images_dir,
                     create_mosaics=self.create_mosaics,
                     orientation_by_image=orientation_by_image,
+                    originals_dir=originals_output_dir,
                 )
                 annotations_output = reconstructed_dir / "_annotations.coco.json"
                 save_coco_json(dataset, annotations_output)
@@ -347,5 +406,19 @@ class SageInferencePipeline:
                     f"[INFO]  +- Completed model '{spec.name}' on fold {fold_idx} "
                     f"in {elapsed:.1f}s. Saved to {annotations_output}"
                 )
+                try:
+                    self._evaluate_predictions(
+                        model_name=spec.name,
+                        fold_name=fold_dir.name,
+                        pred_path=annotations_output,
+                        gt_path=annotations_path,
+                    )
+                except Exception as exc:
+                    print(
+                        f"[WARN] Evaluation failed for model '{spec.name}' on {fold_dir.name}: {exc}"
+                    )
+
+        if self._aggregate_rows:
+            _write_results_csv(self.results_root, self._aggregate_rows)
 
         print("\n[DONE] Pipeline execution completed.")

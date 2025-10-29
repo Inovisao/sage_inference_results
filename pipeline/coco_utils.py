@@ -14,6 +14,15 @@ def load_coco_json(path: Path) -> JsonDict:
         return json.load(handle)
 
 
+def load_coco_annotations(path: Path) -> JsonDict:
+    """Alias for load_coco_json; retained for explicitness."""
+    return load_coco_json(path)
+
+
+def load_coco_annotations(path: Path) -> Mapping[str, object]:
+    return load_coco_json(path)
+
+
 def save_coco_json(data: Mapping[str, object], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
