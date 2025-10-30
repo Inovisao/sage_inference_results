@@ -18,7 +18,8 @@ def _discover_root(reconstructed_root: Path, model: Optional[str]) -> Path:
     if model:
         target = reconstructed_root / model
         if not target.exists():
-            raise FileNotFoundError(f"Modelo '{model}' não encontrado em {reconstructed_root}")
+            raise FileNotFoundError(
+                f"Modelo '{model}' não encontrado em {reconstructed_root}")
         return target
 
     if (reconstructed_root / "_annotations.coco.json").exists():
@@ -26,9 +27,11 @@ def _discover_root(reconstructed_root: Path, model: Optional[str]) -> Path:
 
     subdirs = [path for path in reconstructed_root.iterdir() if path.is_dir()]
     if not subdirs:
-        raise FileNotFoundError(f"Nenhuma pasta encontrada em {reconstructed_root}")
+        raise FileNotFoundError(
+            f"Nenhuma pasta encontrada em {reconstructed_root}")
 
-    candidate_folds = [path for path in subdirs if (path / "_annotations.coco.json").exists()]
+    candidate_folds = [path for path in subdirs if (
+        path / "_annotations.coco.json").exists()]
     if candidate_folds:
         return reconstructed_root
 
@@ -36,7 +39,8 @@ def _discover_root(reconstructed_root: Path, model: Optional[str]) -> Path:
         nested = subdirs[0]
         if (nested / "_annotations.coco.json").exists():
             return nested
-        nested_folds = [path for path in nested.iterdir() if path.is_dir() and (path / "_annotations.coco.json").exists()]
+        nested_folds = [path for path in nested.iterdir() if path.is_dir() and (
+            path / "_annotations.coco.json").exists()]
         if nested_folds:
             return nested
 
@@ -95,61 +99,27 @@ def _format_output_name(image_name: str) -> str:
     return f"{stem}_reconstructed.png"
 
 
-PRESET_PATHS = {
-    "full": {
-        "results_root": Path("results/reconstructed"),
-        "output_root": Path("results/reconstructed_samples"),
-    },
-    "subset": {
-        "results_root": Path("results_subset/reconstructed"),
-        "output_root": Path("reconstructed_subset"),
-    },
-}
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Seleciona imagens reconstruídas por fold e gera visualizações com detecção e ground truth."
     )
-    parser.add_argument(
-        "--mode",
-        choices=tuple(PRESET_PATHS.keys()),
-        default="full",
-        help="Modo de execução. 'full' usa os resultados completos; 'subset' utiliza results_subset/reconstructed.",
-    )
-    parser.add_argument(
-        "--results-root",
-        type=Path,
-        default=None,
-        help="Pasta base com os resultados reconstruídos. O padrão depende do modo selecionado.",
-    )
+    parser.add_argument("--results-root", type=Path,
+                        default=Path("results/reconstructed_subset"))
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
     parser.add_argument(
-        "--model",
-        type=str,
-        help="Nome do modelo dentro da pasta de resultados (ex.: yolov8).",
-    )
+        "--model", type=str, help="Nome do modelo dentro de results/reconstructed (ex.: yolov8).")
     parser.add_argument("--images-per-fold", type=int, default=3)
     parser.add_argument("--score-threshold", type=float, default=0.25)
-    parser.add_argument(
-        "--output-root",
-        type=Path,
-        default=None,
-        help="Diretório de saída para as amostras geradas. O padrão depende do modo selecionado.",
-    )
-    parser.add_argument("--seed", type=int, default=None, help="Semente para reprodutibilidade.")
+    parser.add_argument("--output-root", type=Path,
+                        default=Path("results/reconstructed_samples"))
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Semente para reprodutibilidade.")
     args = parser.parse_args()
 
     if args.images_per_fold <= 0:
-        raise SystemExit("O parâmetro --images-per-fold deve ser maior que zero.")
+        raise SystemExit(
+            "O parâmetro --images-per-fold deve ser maior que zero.")
 
-    preset = PRESET_PATHS[args.mode]
-    if args.results_root is None:
-        args.results_root = preset["results_root"]
-    if args.output_root is None:
-        args.output_root = preset["output_root"]
-
-    print(f"[INFO] Modo selecionado: {args.mode}")
     reconstructed_root = args.results_root
     if not reconstructed_root.exists():
         raise FileNotFoundError(f"Pasta {reconstructed_root} não encontrada.")
@@ -165,12 +135,14 @@ def main() -> int:
     for fold_name, fold_dir in fold_dirs:
         annotations_path = fold_dir / "_annotations.coco.json"
         if not annotations_path.exists():
-            print(f"[WARN] Arquivo {annotations_path} ausente; ignorando fold {fold_name}.")
+            print(
+                f"[WARN] Arquivo {annotations_path} ausente; ignorando fold {fold_name}.")
             continue
 
         detections = load_reconstructed_annotations(annotations_path)
         if not detections:
-            print(f"[WARN] Nenhuma detecção em {annotations_path}; ignorando fold {fold_name}.")
+            print(
+                f"[WARN] Nenhuma detecção em {annotations_path}; ignorando fold {fold_name}.")
             continue
 
         try:
@@ -183,7 +155,8 @@ def main() -> int:
 
         samples = _select_samples(detections, args.images_per_fold, args.seed)
         if not samples:
-            print(f"[WARN] Nenhuma imagem com detecções encontradas em {fold_name}.")
+            print(
+                f"[WARN] Nenhuma imagem com detecções encontradas em {fold_name}.")
             continue
 
         output_dir = _ensure_output_dir(args.output_root, fold_name)
@@ -199,7 +172,8 @@ def main() -> int:
                 args.dataset_root / "train" / image_name,
             ]
 
-            chosen_path = next((path for path in candidate_paths if path.exists()), None)
+            chosen_path = next(
+                (path for path in candidate_paths if path.exists()), None)
             if chosen_path is None:
                 print(f"[WARN] Imagem {image_name} não encontrada; pulando.")
                 continue
@@ -209,7 +183,8 @@ def main() -> int:
             else:
                 source_label = "dataset/train"
 
-            tile_boundaries = load_tile_boundaries(args.dataset_root, fold_name, image_name)
+            tile_boundaries = load_tile_boundaries(
+                args.dataset_root, fold_name, image_name)
             draw_boxes(
                 chosen_path,
                 ground_truth.get(image_name, []),
