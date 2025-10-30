@@ -11,7 +11,7 @@ import cv2
 from .coco_utils import build_image_lookup_by_stem, extract_original_images, load_coco_json, save_coco_json
 from .data_prep import build_tile_index, discover_fold_directories, prepare_original_test_split
 from .detectors import BaseDetector, resolve_detector
-from .reconstruction import build_prediction_dataset, build_raw_detection_dataset
+from .reconstruction import build_prediction_dataset, collect_projected_detections
 from .types import DetectionRecord, ModelWeights, SuppressionParams
 
 _WEIGHT_SUFFIXES = {".pt", ".pth", ".onnx"}
@@ -248,17 +248,24 @@ class SageInferencePipeline:
                 reconstructed_dir = self.results_root / "reconstructed" / spec.name / f"fold{fold_idx}"
                 images_dir = reconstructed_dir / "images"
 
-                raw_dataset, projected_detections, image_meta_by_id = build_raw_detection_dataset(
+                projected_detections, image_meta_by_id = collect_projected_detections(
                     fold_original_to_tiles=original_to_tiles,
                     tile_predictions=tile_predictions,
                     original_images=self.original_images,
-                    base_coco=filtered_coco,
                 )
-                raw_output = reconstructed_dir / "_detections.coco.json"
-                save_coco_json(raw_dataset, raw_output)
-                print(
-                    f"[INFO]  +- Stored raw detections for '{spec.name}' fold {fold_idx} at {raw_output}"
-                )
+
+                suppression_method = (self.suppression.method or "unknown").lower()
+                detection_counts = [len(detections) for detections in projected_detections.values()]
+                if detection_counts:
+                    total_dets = sum(detection_counts)
+                    avg_dets = total_dets / len(detection_counts)
+                    max_dets = max(detection_counts)
+                    min_dets = min(detection_counts)
+                    print(
+                        f"[INFO]  +- Applying suppression ({suppression_method}) on "
+                        f"{len(detection_counts)} images | detections: total={total_dets}, "
+                        f"avg={avg_dets:.1f}, min={min_dets}, max={max_dets}"
+                    )
 
                 dataset = build_prediction_dataset(
                     fold_original_to_tiles=original_to_tiles,
@@ -267,6 +274,7 @@ class SageInferencePipeline:
                     original_images=self.original_images,
                     base_coco=filtered_coco,
                     output_images_dir=images_dir,
+                    source_images_dir=self.train_images_dir,
                     create_mosaics=self.create_mosaics,
                     projected_detections=projected_detections,
                     image_meta_by_id=image_meta_by_id,

@@ -231,6 +231,15 @@ class FasterRCNNDetector(BaseDetector):
                 f"Found type={type(checkpoint)}, keys={list(checkpoint.keys()) if isinstance(checkpoint, dict) else 'N/A'}"
             )
 
+        # Normalise potential prefixes (e.g., 'model.' from wrapped checkpoints or 'module.' from DDP)
+        if state_dict:
+            sample_key = next(iter(state_dict))
+            if sample_key.startswith("model."):
+                state_dict = {k[len("model.") :]: v for k, v in state_dict.items()}
+                sample_key = next(iter(state_dict))
+            if sample_key.startswith("module."):
+                state_dict = {k[len("module.") :]: v for k, v in state_dict.items()}
+
         # === Load the state_dict ===
         model.load_state_dict(state_dict, strict=False)
         model.to(self.torch_device or "cpu")

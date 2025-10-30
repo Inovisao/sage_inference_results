@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import time
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, MutableMapping, Sequence, Tuple
 
@@ -384,9 +385,22 @@ def build_raw_detection_dataset(
     return raw_dataset, detections_by_image, image_meta_by_id
 
 
-def _reconstruct_image(original: OriginalImage, tiles: Sequence[TileMetadata], output_path: Path) -> None:
+def _reconstruct_image(
+    original: OriginalImage,
+    tiles: Sequence[TileMetadata],
+    output_path: Path,
+    *,
+    source_images_dir: Path,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas = Image.new("RGB", (int(original.width), int(original.height)))
+    base_path = source_images_dir / original.file_name
+    if base_path.exists():
+        with Image.open(base_path) as img:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            canvas = img.copy()
+    else:
+        canvas = Image.new("RGB", (int(original.width), int(original.height)))
     for tile in tiles:
         with Image.open(tile.path) as tile_img:
             if tile_img.mode != "RGB":
@@ -403,6 +417,7 @@ def build_prediction_dataset(
     original_images: Mapping[str, OriginalImage],
     base_coco: Mapping[str, object],
     output_images_dir: Path,
+    source_images_dir: Path,
     create_mosaics: bool = False,
     projected_detections: Mapping[int, Sequence[DetectionRecord]] | None = None,
     image_meta_by_id: Mapping[int, OriginalImage] | None = None,
@@ -418,11 +433,14 @@ def build_prediction_dataset(
             original_images=original_images,
         )
 
+    suppression_start = time.perf_counter()
     suppressed_by_image = apply_suppression_to_detections(
         detections_by_image=projected_detections,
         image_meta_by_id=image_meta_by_id,
         params=suppression,
     )
+    suppression_elapsed = time.perf_counter() - suppression_start
+    print(f"        [suppression] Completed in {suppression_elapsed:.2f}s")
 
     dataset = build_dataset_from_detections(
         base_coco=base_coco,
@@ -430,11 +448,25 @@ def build_prediction_dataset(
     )
 
     if create_mosaics:
-        for original_name, tiles in fold_original_to_tiles.items():
+        mosaic_start = time.perf_counter()
+        total_mosaics = len(fold_original_to_tiles)
+        for index, (original_name, tiles) in enumerate(fold_original_to_tiles.items(), start=1):
             original_meta = original_images.get(original_name)
             if original_meta is None:
                 raise KeyError(f"Missing metadata for original image '{original_name}'.")
             output_path = output_images_dir / original_name
-            _reconstruct_image(original_meta, tiles, output_path)
+            _reconstruct_image(
+                original_meta,
+                tiles,
+                output_path,
+                source_images_dir=source_images_dir,
+            )
+            if index % 25 == 0 or index == total_mosaics:
+                print(
+                    f"        [mosaic] Reconstructed {index}/{total_mosaics} original images "
+                    f"({output_path.parent})"
+                )
+        mosaic_elapsed = time.perf_counter() - mosaic_start
+        print(f"        [mosaic] Finished in {mosaic_elapsed:.2f}s")
 
     return dataset

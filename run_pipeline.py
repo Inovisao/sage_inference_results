@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from pipeline import PipelineSettings, SageInferencePipeline
+from pipeline.types import SuppressionParams
 import time
+
 
 def main() -> None:
 
-    print ("Iniciando treinamento! ")
+    print("Iniciando treinamento! ")
     inicio = time.time()
 
     project_root = Path(__file__).resolve().parent
@@ -15,7 +17,8 @@ def main() -> None:
         models_root=project_root / "model_checkpoints",
         results_root=project_root / "results",
         originals_root=project_root / "original_images_test",
-        create_mosaics=True,
+        create_mosaics=False,
+        suppression=SuppressionParams(method="nms", iou_threshold=0.5),
     )
     pipeline = SageInferencePipeline(settings)
     pipeline.run()

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -18,6 +19,7 @@ DEFAULT_SUPPRESSION = SuppressionParams(
     score_ratio_threshold=0.85,
     duplicate_iou_threshold=0.5,
 )
+
 
 def _discover_tiles_for_image(test_dir: Path, target_stem: str) -> List[Tuple[Path, int, int]]:
     """Return a sorted list of (tile_path, offset_x, offset_y) for a given image stem."""
@@ -39,7 +41,8 @@ def _discover_tiles_for_image(test_dir: Path, target_stem: str) -> List[Tuple[Pa
             "Ensure the fold/test split contains the target image."
         )
 
-    candidate_files.sort(key=lambda item: (item[2], item[1]))  # sort by offset_y, then offset_x
+    # sort by offset_y, then offset_x
+    candidate_files.sort(key=lambda item: (item[2], item[1]))
     return candidate_files
 
 
@@ -82,7 +85,8 @@ def _apply_suppression(
             continue
 
         boxes = np.array(
-            [[det.x, det.y, det.x + det.width, det.y + det.height] for det in dets],
+            [[det.x, det.y, det.x + det.width, det.y + det.height]
+                for det in dets],
             dtype=np.float32,
         )
         scores = np.array([det.score for det in dets], dtype=np.float32)
@@ -113,15 +117,82 @@ def _apply_suppression(
     return suppressed
 
 
+def _load_ground_truth(
+    dataset_root: Path,
+    image_name: str,
+) -> Tuple[List[Tuple[float, float, float, float, int]], Dict[int, str]]:
+    coco_path = dataset_root / "train" / "_annotations.coco.json"
+    if not coco_path.exists():
+        return [], {}
+
+    with coco_path.open("r", encoding="utf-8") as handle:
+        coco = json.load(handle)
+
+    name_to_entry: Dict[str, dict] = {}
+    for image_entry in coco.get("images", []):
+        file_name = Path(str(image_entry.get("file_name", ""))).name
+        name_to_entry[file_name] = image_entry
+        extra_name = image_entry.get("extra", {}).get("name")
+        if extra_name:
+            name_to_entry[Path(str(extra_name)).name] = image_entry
+
+    target_name = Path(image_name).name
+    image_entry = name_to_entry.get(target_name)
+    if image_entry is None:
+        return [], {}
+
+    image_id = int(image_entry["id"])
+    gt_boxes: List[Tuple[float, float, float, float, int]] = []
+    for ann in coco.get("annotations", []):
+        if int(ann.get("image_id", -1)) != image_id:
+            continue
+        bbox = ann.get("bbox")
+        if not bbox or len(bbox) < 4:
+            continue
+        category_id = int(ann.get("category_id", 0))
+        gt_boxes.append((float(bbox[0]), float(bbox[1]), float(
+            bbox[2]), float(bbox[3]), category_id))
+
+    categories = {
+        int(cat.get("id", 0)): str(cat.get("name", cat.get("id", "")))
+        for cat in coco.get("categories", [])
+    }
+    return gt_boxes, categories
+
+
 def _draw_detections(
     image_path: Path,
     detections: Sequence[DetectionRecord],
     output_path: Path,
     score_threshold: float,
+    ground_truth: Sequence[Tuple[float, float,
+                                 float, float, int]] | None = None,
+    category_names: Dict[int, str] | None = None,
 ) -> None:
     image = cv2.imread(str(image_path))
     if image is None:
-        raise FileNotFoundError(f"Unable to read original image at '{image_path}'.")
+        raise FileNotFoundError(
+            f"Unable to read original image at '{image_path}'.")
+
+    if ground_truth:
+        for gt_x, gt_y, gt_w, gt_h, gt_class in ground_truth:
+            x1 = int(round(gt_x))
+            y1 = int(round(gt_y))
+            x2 = int(round(gt_x + gt_w))
+            y2 = int(round(gt_y + gt_h))
+            color = (0, 0, 255)  # red for ground truth
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+            if category_names:
+                label = category_names.get(gt_class, str(gt_class))
+                cv2.putText(
+                    image,
+                    f"GT:{label}",
+                    (x1, max(0, y1 - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    color,
+                    2,
+                )
 
     for det in detections:
         if det.score < score_threshold:
@@ -151,8 +222,10 @@ def main() -> None:
         description="Run inference on all tiles of a single image and visualise the suppressed detections."
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
-    parser.add_argument("--fold", type=str, default="fold_1", help="Fold identifier (e.g., fold_1)")
-    parser.add_argument("--image-name", type=str, default="788.jpg", help="Original image file name, e.g., 100.jpg")
+    parser.add_argument("--fold", type=str, default="fold_1",
+                        help="Fold identifier (e.g., fold_1)")
+    parser.add_argument("--image-name", type=str, default="2.jpg",
+                        help="Original image file name, e.g., 100.jpg")
     parser.add_argument(
         "--model",
         type=str,
@@ -162,10 +235,11 @@ def main() -> None:
     parser.add_argument(
         "--weight",
         type=Path,
-        default=Path("model_checkpoints/fold_3/YOLOV8/best.pt"),
+        default=Path("model_checkpoints/fold_2/YOLOV8/best.pt"),
         help="Path to the trained weight file (.pt/.pth)",
     )
-    parser.add_argument("--threshold", type=float, default=0.25, help="Confidence threshold")
+    parser.add_argument("--threshold", type=float,
+                        default=0.25, help="Confidence threshold")
     parser.add_argument(
         "--output",
         type=Path,
@@ -184,7 +258,7 @@ def main() -> None:
     print(f"[INFO] Located {len(tiles)} tiles for image '{args.image_name}'.")
 
     detector_cls = resolve_detector(args.model)
-    
+
     # Handle Faster R-CNN specific requirements
     extra_kwargs = {}
     if detector_cls.model_name in {"faster", "fasterrcnn"}:
@@ -202,7 +276,7 @@ def main() -> None:
                 extra_kwargs["num_classes"] = 2  # default
         else:
             extra_kwargs["num_classes"] = 2  # default
-    
+
     detector = detector_cls(args.weight, **extra_kwargs)
     print(f"[INFO] Loaded detector '{args.model}' from '{args.weight}'.")
 
@@ -223,13 +297,29 @@ def main() -> None:
     finally:
         detector.close()
 
-    print(f"[INFO] Total projected detections before suppression: {len(aggregated)}")
+    print(
+        f"[INFO] Total projected detections before suppression: {len(aggregated)}")
     suppressed = _apply_suppression(aggregated, DEFAULT_SUPPRESSION)
     print(f"[INFO] Detections after suppression: {len(suppressed)}")
 
+    ground_truth, category_names = _load_ground_truth(
+        dataset_root, args.image_name)
+    if ground_truth:
+        print(
+            f"[INFO] Loaded {len(ground_truth)} ground-truth boxes for '{args.image_name}'.")
+    else:
+        print(f"[WARN] No ground-truth boxes found for '{args.image_name}'.")
+
     original_image_path = dataset_root / "train" / args.image_name
     output_path = args.output
-    _draw_detections(original_image_path, suppressed, output_path, score_threshold=args.threshold)
+    _draw_detections(
+        original_image_path,
+        suppressed,
+        output_path,
+        score_threshold=args.threshold,
+        ground_truth=ground_truth,
+        category_names=category_names,
+    )
 
 
 if __name__ == "__main__":
