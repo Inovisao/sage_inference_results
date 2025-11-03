@@ -272,22 +272,37 @@ def discover_folds(model_dir: Path) -> List[Path]:
     return folds
 
 
-def fold_to_gt_path(dataset_root: Path, fold_name: str) -> Path:
+def fold_to_gt_path(dataset_root: Path, originals_root: Path, fold_name: str) -> Path:
     fold_clean = fold_name.replace("_", "")
     candidates = [
+        originals_root / fold_name / "_annotations.coco.json",
+        originals_root / fold_clean / "_annotations.coco.json",
         dataset_root / "imagens_originais" / fold_name / "_annotations.coco.json",
         dataset_root / "imagens_originais" / fold_clean / "_annotations.coco.json",
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    raise FileNotFoundError(f"Ground-truth annotations not found for fold '{fold_name}'. Checked: {candidates}")
+
+    fallback = dataset_root / "train" / "_annotations.coco.json"
+    if fallback.exists():
+        print(
+            f"[WARN] Ground-truth annotations for fold '{fold_name}' not found in imagens_originais. "
+            f"Falling back to {fallback}."
+        )
+        return fallback
+
+    raise FileNotFoundError(
+        f"Ground-truth annotations not found for fold '{fold_name}'. Checked: {candidates + [fallback]}"
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate reconstructed predictions against ground truth.")
-    parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
-    parser.add_argument("--results-root", type=Path, default=Path("results"))
+    project_root = Path(__file__).resolve().parents[1]
+    parser.add_argument("--dataset-root", type=Path, default=project_root / "dataset")
+    parser.add_argument("--results-root", type=Path, default=project_root / "results")
+    parser.add_argument("--originals-root", type=Path, default=project_root / "original_images_test")
     parser.add_argument("--models", nargs="*", help="Optional list of model names to evaluate.")
     args = parser.parse_args()
 
@@ -308,7 +323,7 @@ def main() -> None:
                 print(f"[WARN] Predictions not found at {pred_path}. Skipping.")
                 continue
 
-            gt_path = fold_to_gt_path(args.dataset_root, fold_name)
+            gt_path = fold_to_gt_path(args.dataset_root, args.originals_root, fold_name)
             print(f"\n[INFO] Evaluating model '{model_name}' on {fold_name}")
             print(f"       Predictions: {pred_path}")
             print(f"       Ground truth: {gt_path}")

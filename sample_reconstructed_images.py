@@ -104,7 +104,7 @@ def main() -> int:
         description="Seleciona imagens reconstruídas por fold e gera visualizações com detecção e ground truth."
     )
     parser.add_argument("--results-root", type=Path,
-                        default=Path("results/reconstructed_subset"))
+                        default=Path("results/reconstructed"))
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
     parser.add_argument(
         "--model", type=str, help="Nome do modelo dentro de results/reconstructed (ex.: yolov8).")
