@@ -46,7 +46,7 @@ def adaptive_cluster_diou_nms(
         else:
             density = 0.0
 
-        adaptive_thresh = float(min(0.9, T0 + alpha * density))
+        adaptive_thresh = float(min(0.05, T0 + alpha * density))
 
         anchor_score = float(scores_arr[anchor])
         other_scores = scores_arr[remaining]
