@@ -17,7 +17,7 @@ from calcula_estatisticas.evaluate_reconstructed import (
 from pipeline import PipelineSettings, SageInferencePipeline
 from pipeline.types import SuppressionParams
 
-AVAILABLE_METHODS = ["cluster_diou_ait", "cluster_diou_nms", "cluster_diou_bws", "nms", "bws"]
+AVAILABLE_METHODS = ["cluster_diou_ait", "cluster_ait", "cluster_diou_nms", "cluster_diou_bws", "nms", "bws"]
 
 
 def _default_params(method: str) -> SuppressionParams:
@@ -31,6 +31,19 @@ def _default_params(method: str) -> SuppressionParams:
             "duplicate_iou_threshold": 0.5,
         }
         return SuppressionParams(method=method_lower, extra=extra)
+    if method_lower == "cluster_ait":
+        extra = {
+            "T0": 0.5,
+            "alpha": 0.2,
+            "k": 5,
+            "lambda_weight": 0.6,
+        }
+        return SuppressionParams(
+            method=method_lower,
+            affinity_threshold=extra["T0"],
+            lambda_weight=extra["lambda_weight"],
+            extra=extra,
+        )
     if method_lower == "cluster_diou_nms":
         return SuppressionParams(method=method_lower, diou_threshold=0.5)
     if method_lower == "cluster_diou_bws":

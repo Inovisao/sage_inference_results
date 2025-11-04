@@ -112,7 +112,7 @@ def _parse_args() -> argparse.Namespace:
         "--method",
         type=str,
         default="nms",
-        help="Suppression method (cluster_diou_ait [auto thresholds], nms, bws, cluster_diou_nms, cluster_diou_bws).",
+        help="Suppression method (cluster_diou_ait [auto thresholds], cluster_ait, nms, bws, cluster_diou_nms, cluster_diou_bws).",
     )
     parser.add_argument(
         "--affinity-threshold",

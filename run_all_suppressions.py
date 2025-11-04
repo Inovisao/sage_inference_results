@@ -5,7 +5,7 @@ import csv
 import json
 import statistics
 from pathlib import Path
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from calcula_estatisticas.evaluate_reconstructed import (
     evaluate_fold,
@@ -18,7 +18,7 @@ from pipeline.types import DetectionRecord, OriginalImage, SuppressionParams
 from pipeline.coco_utils import save_coco_json
 
 
-AVAILABLE_METHODS = ["cluster_diou_ait", "cluster_diou_nms", "cluster_diou_bws", "nms", "bws"]
+AVAILABLE_METHODS = ["cluster_diou_ait", "cluster_ait", "cluster_diou_nms", "cluster_diou_bws", "nms", "bws"]
 
 
 def discover_models(raw_root: Path) -> Sequence[Path]:
@@ -33,12 +33,34 @@ def discover_folds(model_dir: Path) -> Sequence[Path]:
     return folds
 
 
-def load_raw_detections(raw_path: Path) -> Tuple[Mapping[str, object], Dict[int, List[DetectionRecord]], Dict[int, OriginalImage]]:
+def load_raw_detections(
+    raw_path: Path,
+    sample_size: Optional[int] = None,
+) -> Tuple[Mapping[str, object], Dict[int, List[DetectionRecord]], Dict[int, OriginalImage]]:
     with raw_path.open("r", encoding="utf-8") as handle:
         coco = json.load(handle)
 
+    images = list(coco.get("images", []))
+    total_images = len(images)
+    annotations = list(coco.get("annotations", []))
+
+    selected_images = images
+    if sample_size is not None and sample_size > 0 and sample_size < total_images:
+        selected_images = images[:sample_size]
+        selected_ids = {int(image["id"]) for image in selected_images}
+        coco["images"] = selected_images
+        coco["annotations"] = [
+            ann for ann in annotations if int(ann["image_id"]) in selected_ids
+        ]
+        print(
+            f"[INFO] Sampling {len(selected_images)}/{total_images} images from '{raw_path.name}' for quick testing."
+        )
+    else:
+        selected_ids = {int(image["id"]) for image in selected_images}
+        coco["annotations"] = annotations
+
     image_meta: Dict[int, OriginalImage] = {}
-    for image_entry in coco.get("images", []):
+    for image_entry in selected_images:
         image_id = int(image_entry["id"])
         file_name = str(image_entry["file_name"])
         width = int(image_entry.get("width", 0))
@@ -54,6 +76,8 @@ def load_raw_detections(raw_path: Path) -> Tuple[Mapping[str, object], Dict[int,
     detections: Dict[int, List[DetectionRecord]] = {image_id: [] for image_id in image_meta}
     for ann in coco.get("annotations", []):
         image_id = int(ann["image_id"])
+        if image_id not in selected_ids:
+            continue
         record = DetectionRecord(
             x=float(ann["bbox"][0]),
             y=float(ann["bbox"][1]),
@@ -78,6 +102,19 @@ def default_params_for_method(method: str) -> SuppressionParams:
             "duplicate_iou_threshold": 0.5,
         }
         return SuppressionParams(method=method, extra=extra)
+    if method == "cluster_ait":
+        extra = {
+            "T0": 0.5,
+            "alpha": 0.2,
+            "k": 5,
+            "lambda_weight": 0.6,
+        }
+        return SuppressionParams(
+            method=method,
+            affinity_threshold=extra["T0"],
+            lambda_weight=extra["lambda_weight"],
+            extra=extra,
+        )
     if method == "cluster_diou_nms":
         return SuppressionParams(method=method, diou_threshold=0.5)
     if method == "cluster_diou_bws":
@@ -91,8 +128,11 @@ def suppress_raw_annotations(
     *,
     raw_path: Path,
     params: SuppressionParams,
+    sample_size: Optional[int] = None,
 ) -> Mapping[str, object]:
-    base_coco, detections_by_image, image_meta = load_raw_detections(raw_path)
+    base_coco, detections_by_image, image_meta = load_raw_detections(
+        raw_path, sample_size=sample_size
+    )
     suppressed = apply_suppression_to_detections(
         detections_by_image=detections_by_image,
         image_meta_by_id=image_meta,
@@ -117,6 +157,7 @@ def evaluate_method_predictions(
     *,
     method_root: Path,
     dataset_root: Path,
+    originals_root: Path,
 ) -> None:
     reconstructed_root = method_root / "reconstructed"
     if not reconstructed_root.exists():
@@ -133,7 +174,7 @@ def evaluate_method_predictions(
                 print(f"[WARN] Predictions not found at {pred_path}; skipping.")
                 continue
             try:
-                gt_path = fold_to_gt_path(dataset_root, fold_dir.name)
+                gt_path = fold_to_gt_path(dataset_root, originals_root, fold_dir.name)
             except FileNotFoundError as exc:
                 print(f"[WARN] {exc}")
                 continue
@@ -220,6 +261,7 @@ def run_method(
     method: str,
     raw_root: Path,
     output_root: Path,
+    sample_size: Optional[int] = None,
 ) -> None:
     params = default_params_for_method(method)
     reconstructed_root = raw_root
@@ -244,7 +286,11 @@ def run_method(
                     )
                     continue
 
-            dataset = suppress_raw_annotations(raw_path=raw_path, params=params)
+            dataset = suppress_raw_annotations(
+                raw_path=raw_path,
+                params=params,
+                sample_size=sample_size,
+            )
 
             destination = method_root / "reconstructed" / model_name / fold_dir.name / "_annotations.coco.json"
             save_suppressed_dataset(dataset=dataset, destination=destination)
@@ -274,6 +320,18 @@ def parse_args() -> argparse.Namespace:
         help="Dataset root used to locate ground-truth annotations.",
     )
     parser.add_argument(
+        "--originals-root",
+        type=Path,
+        default=None,
+        help="Directory containing original-image annotations per fold (defaults to <dataset-root>/imagens_originais).",
+    )
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=0,
+        help="Limit the number of images per fold when suppressing (0 means full dataset).",
+    )
+    parser.add_argument(
         "--methods",
         nargs="*",
         choices=AVAILABLE_METHODS,
@@ -285,15 +343,29 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     methods = args.methods or AVAILABLE_METHODS
+    sample_size = args.sample_size if args.sample_size and args.sample_size > 0 else None
+    originals_root = args.originals_root or (args.dataset_root / "imagens_originais")
+
+    if sample_size is not None:
+        print(f"[INFO] Sample mode enabled: up to {sample_size} images per fold.")
 
     results_csv_map: Dict[str, Path] = {}
 
     for method in methods:
         print(f"\n[INFO] Running suppression method '{method}'")
-        run_method(method=method, raw_root=args.raw_root, output_root=args.output_root)
+        run_method(
+            method=method,
+            raw_root=args.raw_root,
+            output_root=args.output_root,
+            sample_size=sample_size,
+        )
 
         method_root = args.output_root / method
-        evaluate_method_predictions(method_root=method_root, dataset_root=args.dataset_root)
+        evaluate_method_predictions(
+            method_root=method_root,
+            dataset_root=args.dataset_root,
+            originals_root=originals_root,
+        )
         results_csv_map[method] = method_root / "results.csv"
 
     final_results_path = args.output_root / "final_results.csv"

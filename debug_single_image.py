@@ -91,7 +91,7 @@ def _apply_suppression(
         )
         scores = np.array([det.score for det in dets], dtype=np.float32)
 
-        keep_indices = adaptive_cluster_diou_nms(
+        kept_boxes, kept_scores = adaptive_cluster_diou_nms(
             boxes,
             scores,
             T0=params.affinity_threshold,
@@ -100,16 +100,15 @@ def _apply_suppression(
             diou_dup_thresh=params.duplicate_iou_threshold,
         )
 
-        for idx in keep_indices:
-            x1, y1, x2, y2 = boxes[idx].tolist()
-            score = float(scores[idx])
+        for box, score in zip(kept_boxes, kept_scores):
+            x1, y1, x2, y2 = [float(v) for v in box.tolist()]
             suppressed.append(
                 DetectionRecord(
                     x=float(x1),
                     y=float(y1),
                     width=float(x2 - x1),
                     height=float(y2 - y1),
-                    score=score,
+                    score=float(score),
                     category_id=class_id,
                 )
             )

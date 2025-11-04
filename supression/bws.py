@@ -1,38 +1,54 @@
 import numpy as np
-from .nms import compute_iou
 
-def bws(boxes, scores, iou_thresh=0.5):
-    """
-    Box Weighted Suppression (BWS)
-    Faz média ponderada das caixas com IoU > iou_thresh.
-    """
-    indices = np.argsort(scores)[::-1]
-    boxes_final = []
-    scores_final = []
+from .nms import _prepare_inputs, compute_iou
 
-    while len(indices) > 0:
-        i = indices[0]
-        overlaps = [i]
-        rest = indices[1:]
 
-        for j in rest:
-            iou = compute_iou(boxes[i], boxes[j])
-            if iou > iou_thresh:
-                overlaps.append(j)
+def bws(
+    boxes: np.ndarray | list[list[float]],
+    scores: np.ndarray | list[float],
+    iou_thresh: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Média ponderada por score (BWS)."""
+    boxes_arr, scores_arr = _prepare_inputs(boxes, scores)
+    if boxes_arr.size == 0:
+        return boxes_arr, scores_arr
 
-        cluster_boxes = boxes[overlaps]
-        cluster_scores = scores[overlaps]
+    order = np.argsort(scores_arr)[::-1]
+    used = np.zeros_like(scores_arr, dtype=bool)
 
-        total = cluster_scores.sum()
-        if total <= 0:
-            weights = np.full_like(cluster_scores, 1.0 / len(cluster_scores))
-        else:
+    merged_boxes: list[np.ndarray] = []
+    merged_scores: list[float] = []
+
+    for anchor in order:
+        if used[anchor]:
+            continue
+
+        cluster = [anchor]
+        used[anchor] = True
+
+        for candidate in order:
+            if used[candidate]:
+                continue
+            if compute_iou(boxes_arr[anchor], boxes_arr[candidate]) > iou_thresh:
+                cluster.append(candidate)
+                used[candidate] = True
+
+        cluster_boxes = boxes_arr[cluster]
+        cluster_scores = scores_arr[cluster]
+        total = float(cluster_scores.sum())
+
+        if total > 0:
             weights = cluster_scores / total
-        merged_box = np.sum(cluster_boxes * weights[:, None], axis=0)
+        else:
+            weights = np.full_like(cluster_scores, 1.0 / len(cluster), dtype=np.float32)
 
-        boxes_final.append(merged_box)
-        scores_final.append(cluster_scores.max())
+        merged_box = np.average(cluster_boxes, axis=0, weights=weights).astype(np.float32)
+        merged_score = float(cluster_scores.max())
 
-        indices = np.array([idx for idx in rest if idx not in overlaps])
+        merged_boxes.append(merged_box)
+        merged_scores.append(merged_score)
 
-    return np.array(boxes_final), np.array(scores_final)
+    merged_order = np.argsort(merged_scores)[::-1]
+    final_boxes = np.asarray(merged_boxes, dtype=np.float32)[merged_order]
+    final_scores = np.asarray(merged_scores, dtype=np.float32)[merged_order]
+    return final_boxes, final_scores

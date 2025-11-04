@@ -1,19 +1,19 @@
 import numpy as np
 
+from .cluster_diou_bws import compute_center_distance
 from .cluster_diou_nms import compute_diou
-from .nms import _prepare_inputs
+from .nms import _prepare_inputs, compute_iou
 
 
-def adaptive_cluster_diou_nms(
+def cluster_ait(
     boxes: np.ndarray | list[list[float]],
     scores: np.ndarray | list[float],
-    T0: float = 0.45,
-    alpha: float = 0.15,
+    T0: float = 0.5,
+    alpha: float = 0.2,
     k: int = 5,
-    score_ratio_thresh: float = 0.85,
-    diou_dup_thresh: float = 0.5,
+    lambda_weight: float = 0.6,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Threshold AIT local aplicado ao Cluster-DIoU."""
+    """Threshold adaptativo com agrupamento (Cluster-AIT)."""
     boxes_arr, scores_arr = _prepare_inputs(boxes, scores)
     if boxes_arr.size == 0:
         return boxes_arr, scores_arr
@@ -26,11 +26,13 @@ def adaptive_cluster_diou_nms(
         if used[anchor]:
             continue
 
-        keep.append(anchor)
+        cluster = [anchor]
         used[anchor] = True
 
         remaining = order[~used[order]]
         if remaining.size == 0:
+            best_idx = anchor
+            keep.append(best_idx)
             continue
 
         anchor_box = boxes_arr[anchor]
@@ -48,20 +50,25 @@ def adaptive_cluster_diou_nms(
 
         adaptive_thresh = float(min(0.9, T0 + alpha * density))
 
-        anchor_score = float(scores_arr[anchor])
-        other_scores = scores_arr[remaining]
-        if anchor_score > 0:
-            score_ratios = other_scores / anchor_score
-        else:
-            score_ratios = np.zeros_like(other_scores)
+        center_scores = np.array(
+            [compute_center_distance(anchor_box, boxes_arr[idx]) for idx in remaining],
+            dtype=np.float32,
+        )
+        iou_scores = np.array(
+            [compute_iou(anchor_box, boxes_arr[idx]) for idx in remaining],
+            dtype=np.float32,
+        )
+        affinity = lambda_weight * iou_scores + (1.0 - lambda_weight) * center_scores
 
-        dup_thresh = max(adaptive_thresh, diou_dup_thresh)
-        duplicate_mask = (dious > dup_thresh) & (score_ratios >= score_ratio_thresh)
-        suppression_mask = dious > adaptive_thresh
-        to_remove = suppression_mask | duplicate_mask
+        for candidate, diou_val, affinity_val in zip(remaining, dious, affinity):
+            if diou_val <= 0:
+                continue
+            if affinity_val > adaptive_thresh:
+                cluster.append(candidate)
+                used[candidate] = True
 
-        if np.any(to_remove):
-            used[remaining[to_remove]] = True
+        best_idx = max(cluster, key=lambda idx_: scores_arr[idx_])
+        keep.append(best_idx)
 
     keep_arr = np.array(keep, dtype=np.int32)
     keep_arr = keep_arr[np.argsort(scores_arr[keep_arr])[::-1]]

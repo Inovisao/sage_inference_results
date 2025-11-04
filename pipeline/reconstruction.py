@@ -54,7 +54,30 @@ def apply_suppression(
                 score_ratio_thresh=score_ratio_thresh,
                 diou_dup_thresh=diou_dup_thresh,
             ),
-            mode="indices",
+            mode="boxes",
+        )
+
+    if method == "cluster_ait":
+        from supression.cluster_ait import cluster_ait
+
+        T0 = float(extra.get("T0", params.affinity_threshold if params.affinity_threshold is not None else 0.5))
+        alpha = float(extra.get("alpha", 0.2))
+        k = int(extra.get("k", 5))
+        lambda_weight = float(extra.get("lambda_weight", params.lambda_weight if params.lambda_weight is not None else 0.6))
+
+        return _apply_classwise_suppression(
+            detections,
+            image_width=image_width,
+            image_height=image_height,
+            suppression_fn=lambda boxes, scores: cluster_ait(
+                boxes,
+                scores,
+                T0=T0,
+                alpha=alpha,
+                k=k,
+                lambda_weight=lambda_weight,
+            ),
+            mode="boxes",
         )
 
     if method == "nms":
@@ -147,7 +170,7 @@ def apply_suppression(
             score_ratio_thresh=score_ratio_thresh,
             diou_dup_thresh=diou_dup_thresh,
         ),
-        mode="indices",
+        mode="boxes",
     )
 
 
