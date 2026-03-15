@@ -44,14 +44,6 @@ def build_image_lookup_by_stem(images: Mapping[str, OriginalImage]) -> Dict[str,
     return lookup
 
 
-def group_annotations_by_image(coco: Mapping[str, object]) -> Dict[int, List[MutableMapping[str, object]]]:
-    by_image: Dict[int, List[MutableMapping[str, object]]] = {}
-    for ann in coco.get("annotations", []):
-        image_id = int(ann["image_id"])
-        by_image.setdefault(image_id, []).append(dict(ann))
-    return by_image
-
-
 def filter_coco_dataset(
     coco: Mapping[str, object],
     image_ids: Iterable[int],
@@ -88,13 +80,3 @@ def filter_coco_dataset(
         "categories": coco.get("categories", []),
     }
     return dataset
-
-
-def create_empty_coco_template() -> JsonDict:
-    return {
-        "info": {},
-        "licenses": [],
-        "images": [],
-        "annotations": [],
-        "categories": [],
-    }

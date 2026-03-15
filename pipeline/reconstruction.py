@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
+from typing import Dict, List, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -48,7 +48,7 @@ def _clip_detection(det: DetectionRecord, *, width: int, height: int) -> Detecti
 #   - "bws"
 #   - "cluster_diou_nms" / "cluster_nms"
 #   - "cluster_diou_bws" / "cluster_bws"
-def _apply_nms_suppression(
+def _apply_suppression_by_method(
     detections: Sequence[DetectionRecord],
     *,
     image_width: int,
@@ -180,7 +180,7 @@ def apply_suppression(
     params: SuppressionParams,
 ) -> List[DetectionRecord]:
     """Public helper to run the configured suppression method."""
-    return _apply_nms_suppression(
+    return _apply_suppression_by_method(
         detections,
         image_width=image_width,
         image_height=image_height,

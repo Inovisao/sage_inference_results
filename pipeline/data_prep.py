@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, List, Mapping
+from typing import Dict, List, Mapping, Tuple
 
 from . import coco_utils
 from .types import OriginalImage, OriginalToTiles, TileIndex, TileMetadata
