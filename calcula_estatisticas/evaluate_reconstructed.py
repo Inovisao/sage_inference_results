@@ -320,11 +320,13 @@ def discover_models(results_root: Path, models: Sequence[str] | None) -> List[Pa
         raise FileNotFoundError(f"Reconstructed directory not found at {reconstructed_root}")
 
     if models:
+        available = {p.name.lower(): p for p in reconstructed_root.iterdir() if p.is_dir()}
         paths = []
         for name in models:
-            candidate = reconstructed_root / name
-            if not candidate.exists():
-                raise FileNotFoundError(f"Model directory '{candidate}' not found.")
+            candidate = available.get(str(name).lower())
+            if candidate is None:
+                expected = reconstructed_root / name
+                raise FileNotFoundError(f"Model directory '{expected}' not found.")
             paths.append(candidate)
         return paths
 
@@ -337,14 +339,12 @@ def discover_folds(model_dir: Path) -> List[Path]:
     return folds
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate reconstructed predictions against ground truth.")
-    parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
-    parser.add_argument("--results-root", type=Path, default=Path("results"))
-    parser.add_argument("--models", nargs="*", help="Optional list of model names to evaluate.")
-    args = parser.parse_args()
-
-    model_dirs = discover_models(args.results_root, args.models)
+def evaluate_results_root(
+    dataset_root: Path,
+    results_root: Path,
+    models: Sequence[str] | None = None,
+) -> List[List[str]]:
+    model_dirs = discover_models(results_root, models)
     aggregate_rows: List[List[str]] = []
 
     for model_dir in model_dirs:
@@ -361,13 +361,13 @@ def main() -> None:
                 print(f"[WARN] Predictions not found at {pred_path}. Skipping.")
                 continue
 
-            gt_path = resolve_ground_truth_path(args.dataset_root, fold_name)
+            gt_path = resolve_ground_truth_path(dataset_root, fold_name)
             print(f"\n[INFO] Evaluating model '{model_name}' on {fold_name}")
             print(f"       Predictions: {pred_path}")
             print(f"       Ground truth: {gt_path}")
 
             per_image, summary = evaluate_fold(pred_path, gt_path)
-            write_details_csv(args.results_root, model_name, fold_name, per_image)
+            write_details_csv(results_root, model_name, fold_name, per_image)
 
             aggregate_rows.append([
                 model_name,
@@ -384,9 +384,20 @@ def main() -> None:
             ])
 
     if aggregate_rows:
-        write_results_csv(args.results_root, aggregate_rows)
+        write_results_csv(results_root, aggregate_rows)
     else:
         print("[WARN] No evaluation rows generated.")
+
+    return aggregate_rows
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate reconstructed predictions against ground truth.")
+    parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
+    parser.add_argument("--results-root", type=Path, default=Path("results"))
+    parser.add_argument("--models", nargs="*", help="Optional list of model names to evaluate.")
+    args = parser.parse_args()
+    evaluate_results_root(args.dataset_root, args.results_root, args.models)
 
 
 if __name__ == "__main__":

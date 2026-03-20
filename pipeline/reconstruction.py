@@ -313,7 +313,7 @@ def build_prediction_dataset(
             detections = tile_predictions.get(tile.file_name, [])
             combined.extend(_project_tile_detections(tile, detections))
 
-        suppressed = _apply_nms_suppression(
+        suppressed = apply_suppression(
             combined,
             image_width=original_meta.width,
             image_height=original_meta.height,

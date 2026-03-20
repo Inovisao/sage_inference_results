@@ -31,6 +31,7 @@ class PipelineSettings:
     enabled_models: Optional[Sequence[str]] = None
     detector_name_aliases: Mapping[str, str] = field(default_factory=dict)
     model_num_classes: Mapping[str, int] = field(default_factory=dict)
+    skip_existing_predictions: bool = True
 
 
 class SageInferencePipeline:
@@ -47,6 +48,7 @@ class SageInferencePipeline:
         self.detection_thresholds = {k.lower(): v for k, v in settings.detection_thresholds.items()}
         self.model_class_offsets = {k.lower(): v for k, v in settings.model_class_offsets.items()}
         self.model_num_classes = {k.lower(): v for k, v in settings.model_num_classes.items()}
+        self.skip_existing_predictions = settings.skip_existing_predictions
         self.enabled_models = None
         if settings.enabled_models:
             self.enabled_models = {name.lower() for name in settings.enabled_models}
@@ -249,103 +251,113 @@ class SageInferencePipeline:
                 continue
             fold_idx = int(match.group(1))
             print(f"\n[INFO] Processing {fold_dir.name} (fold {fold_idx})")
+            try:
+                test_dir = fold_dir / "test"
+                tile_index, original_to_tiles = build_tile_index(test_dir, self.original_images_by_stem)
 
-            test_dir = fold_dir / "test"
-            tile_index, original_to_tiles = build_tile_index(test_dir, self.original_images_by_stem)
-
-            total_tiles = len(tile_index)
-            originals_output_dir = self.originals_root / f"fold{fold_idx}"
-            annotations_path = prepare_original_test_split(
-                self.train_coco,
-                original_to_tiles,
-                output_dir=originals_output_dir,
-                source_images_dir=self.train_images_dir,
-            )
-            filtered_coco = load_coco_json(annotations_path)
-
-            if not model_specs:
-                continue
-
-            orientation_by_image = self._detect_tile_orientations(original_to_tiles, originals_output_dir)
-            if orientation_by_image:
-                print(
-                    f"[INFO]  +- Rotation compensation needed for {len(orientation_by_image)} original images."
+                total_tiles = len(tile_index)
+                originals_output_dir = self.originals_root / f"fold{fold_idx}"
+                annotations_path = prepare_original_test_split(
+                    self.train_coco,
+                    original_to_tiles,
+                    output_dir=originals_output_dir,
+                    source_images_dir=self.train_images_dir,
                 )
+                filtered_coco = load_coco_json(annotations_path)
 
-            for spec in model_specs:
-                weight_path = spec.get(fold_idx)
-                if weight_path is None:
-                    print(f"[WARN] Model '{spec.name}' has no weight for fold {fold_idx}. Skipping.")
+                if not model_specs:
                     continue
 
-                print(f"[INFO]  +- Running model '{spec.name}' with weights '{weight_path.name}'")
-                start_time = time.time()
-                try:
-                    detector = self._instantiate_detector(spec.name, weight_path)
-                except Exception as exc:
-                    print(f"[ERROR] Failed to instantiate detector '{spec.name}': {exc}")
-                    continue
-
-                tile_predictions: Optional[MutableMapping[str, Sequence[DetectionRecord]]] = {}
-                try:
-                    with detector:
-                        for tile_idx, (tile_name, metadata) in enumerate(sorted(tile_index.items()), 1):
-                            print(
-                                f"        [fold {fold_idx}][{spec.name}] starting tile "
-                                f"{tile_idx}/{total_tiles}: {tile_name}"
-                            )
-                            image = cv2.imread(str(metadata.path))
-                            if image is None:
-                                raise FileNotFoundError(f"Unable to read tile image '{metadata.path}'.")
-                            threshold = self.detection_thresholds.get(spec.name.lower(), detector.threshold)
-                            try:
-                                detections = detector.predict(image, threshold)
-                            except ImportError as exc:
-                                print(
-                                    f"[ERROR] Missing dependency while running '{spec.name}' on fold {fold_idx}: {exc}"
-                                )
-                                tile_predictions = None
-                                print(
-                                    f"        [fold {fold_idx}][{spec.name}] dependency missing; aborting model"
-                                )
-                                break
-                            tile_predictions[tile_name] = detections
-                            print(
-                                f"        [fold {fold_idx}][{spec.name}] finished {tile_name} "
-                                f"with {len(detections)} detections"
-                            )
-                            if tile_idx % 100 == 0 or tile_idx == total_tiles:
-                                print(
-                                    f"        [fold {fold_idx}][{spec.name}] "
-                                    f"{tile_idx}/{total_tiles} tiles processed"
-                                )
-                finally:
-                    detector.close()
-
-                if tile_predictions is None:
+                orientation_by_image = self._detect_tile_orientations(original_to_tiles, originals_output_dir)
+                if orientation_by_image:
                     print(
-                        f"[WARN] Skipping model '{spec.name}' on fold {fold_idx} due to unresolved dependencies."
+                        f"[INFO]  +- Rotation compensation needed for {len(orientation_by_image)} original images."
                     )
-                    continue
 
-                reconstructed_dir = self.results_root / "reconstructed" / spec.name / f"fold{fold_idx}"
-                images_dir = reconstructed_dir / "images"
-                dataset = build_prediction_dataset(
-                    fold_original_to_tiles=original_to_tiles,
-                    tile_predictions=tile_predictions,
-                    suppression=self.suppression,
-                    original_images=self.original_images,
-                    base_coco=filtered_coco,
-                    output_images_dir=images_dir,
-                    create_mosaics=self.create_mosaics,
-                    orientation_by_image=orientation_by_image,
-                )
-                annotations_output = reconstructed_dir / "_annotations.coco.json"
-                save_coco_json(dataset, annotations_output)
-                elapsed = time.time() - start_time
-                print(
-                    f"[INFO]  +- Completed model '{spec.name}' on fold {fold_idx} "
-                    f"in {elapsed:.1f}s. Saved to {annotations_output}"
-                )
+                for spec in model_specs:
+                    weight_path = spec.get(fold_idx)
+                    if weight_path is None:
+                        print(f"[WARN] Model '{spec.name}' has no weight for fold {fold_idx}. Skipping.")
+                        continue
+
+                    reconstructed_dir = self.results_root / "reconstructed" / spec.name / f"fold{fold_idx}"
+                    annotations_output = reconstructed_dir / "_annotations.coco.json"
+                    if self.skip_existing_predictions and annotations_output.exists():
+                        print(
+                            f"[INFO]  +- Checkpoint found for model '{spec.name}' on fold {fold_idx}. "
+                            f"Skipping inference and reusing {annotations_output}"
+                        )
+                        continue
+
+                    print(f"[INFO]  +- Running model '{spec.name}' with weights '{weight_path.name}'")
+                    start_time = time.time()
+                    try:
+                        detector = self._instantiate_detector(spec.name, weight_path)
+                    except Exception as exc:
+                        print(f"[ERROR] Failed to instantiate detector '{spec.name}': {exc}")
+                        continue
+
+                    tile_predictions: Optional[MutableMapping[str, Sequence[DetectionRecord]]] = {}
+                    try:
+                        with detector:
+                            for tile_idx, (tile_name, metadata) in enumerate(sorted(tile_index.items()), 1):
+                                print(
+                                    f"        [fold {fold_idx}][{spec.name}] starting tile "
+                                    f"{tile_idx}/{total_tiles}: {tile_name}"
+                                )
+                                image = cv2.imread(str(metadata.path))
+                                if image is None:
+                                    raise FileNotFoundError(f"Unable to read tile image '{metadata.path}'.")
+                                threshold = self.detection_thresholds.get(spec.name.lower(), detector.threshold)
+                                try:
+                                    detections = detector.predict(image, threshold)
+                                except ImportError as exc:
+                                    print(
+                                        f"[ERROR] Missing dependency while running '{spec.name}' on fold {fold_idx}: {exc}"
+                                    )
+                                    tile_predictions = None
+                                    print(
+                                        f"        [fold {fold_idx}][{spec.name}] dependency missing; aborting model"
+                                    )
+                                    break
+                                tile_predictions[tile_name] = detections
+                                print(
+                                    f"        [fold {fold_idx}][{spec.name}] finished {tile_name} "
+                                    f"with {len(detections)} detections"
+                                )
+                                if tile_idx % 100 == 0 or tile_idx == total_tiles:
+                                    print(
+                                        f"        [fold {fold_idx}][{spec.name}] "
+                                        f"{tile_idx}/{total_tiles} tiles processed"
+                                    )
+                    finally:
+                        detector.close()
+
+                    if tile_predictions is None:
+                        print(
+                            f"[WARN] Skipping model '{spec.name}' on fold {fold_idx} due to unresolved dependencies."
+                        )
+                        continue
+
+                    images_dir = reconstructed_dir / "images"
+                    dataset = build_prediction_dataset(
+                        fold_original_to_tiles=original_to_tiles,
+                        tile_predictions=tile_predictions,
+                        suppression=self.suppression,
+                        original_images=self.original_images,
+                        base_coco=filtered_coco,
+                        output_images_dir=images_dir,
+                        create_mosaics=self.create_mosaics,
+                        orientation_by_image=orientation_by_image,
+                    )
+                    save_coco_json(dataset, annotations_output)
+                    elapsed = time.time() - start_time
+                    print(
+                        f"[INFO]  +- Completed model '{spec.name}' on fold {fold_idx} "
+                        f"in {elapsed:.1f}s. Saved to {annotations_output}"
+                    )
+            except Exception as exc:
+                print(f"[ERROR] Failed while processing {fold_dir.name}: {exc}")
+                continue
 
         print("\n[DONE] Pipeline execution completed.")

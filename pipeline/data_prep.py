@@ -11,6 +11,23 @@ from .types import OriginalImage, OriginalToTiles, TileIndex, TileMetadata
 _FOLD_REGEX = re.compile(r"fold[_\-]?(\d+)", re.IGNORECASE)
 
 
+def _candidate_original_stems(tile_stem: str) -> List[str]:
+    candidates = [tile_stem]
+    markers = (
+        "_jpg.rf.",
+        "_jpeg.rf.",
+        "_png.rf.",
+        "_bmp.rf.",
+        "_tif.rf.",
+        "_tiff.rf.",
+    )
+    for marker in markers:
+        if marker in tile_stem:
+            candidates.append(tile_stem.split(marker, 1)[0])
+            break
+    return candidates
+
+
 def discover_fold_directories(tiles_root: Path) -> List[Path]:
     folds: List[Tuple[int, Path]] = []
     for candidate in tiles_root.iterdir():
@@ -59,7 +76,11 @@ def build_tile_index(
     for image_entry in coco.get("images", []):
         file_name = str(image_entry["file_name"])
         stem, offset_x, offset_y = parse_tile_filename(file_name)
-        original = train_images_by_stem.get(stem)
+        original = None
+        for candidate_stem in _candidate_original_stems(stem):
+            original = train_images_by_stem.get(candidate_stem)
+            if original is not None:
+                break
         if original is None:
             raise KeyError(f"No original image found for tile '{file_name}' (stem '{stem}').")
 

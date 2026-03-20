@@ -9,6 +9,24 @@ from .types import OriginalImage
 JsonDict = MutableMapping[str, object]
 
 
+def _stem_aliases(file_name: str) -> List[str]:
+    stem = Path(file_name).stem
+    aliases = [stem]
+    markers = (
+        "_jpg.rf.",
+        "_jpeg.rf.",
+        "_png.rf.",
+        "_bmp.rf.",
+        "_tif.rf.",
+        "_tiff.rf.",
+    )
+    for marker in markers:
+        if marker in stem:
+            aliases.append(stem.split(marker, 1)[0])
+            break
+    return aliases
+
+
 def load_coco_json(path: Path) -> JsonDict:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -40,7 +58,8 @@ def extract_original_images(coco: Mapping[str, object]) -> Dict[str, OriginalIma
 def build_image_lookup_by_stem(images: Mapping[str, OriginalImage]) -> Dict[str, OriginalImage]:
     lookup = {}
     for img in images.values():
-        lookup[img.stem] = img
+        for alias in _stem_aliases(img.file_name):
+            lookup[alias] = img
     return lookup
 
 
