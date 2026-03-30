@@ -32,6 +32,7 @@ class PipelineSettings:
     detector_name_aliases: Mapping[str, str] = field(default_factory=dict)
     model_num_classes: Mapping[str, int] = field(default_factory=dict)
     skip_existing_predictions: bool = True
+    allowed_folds: Optional[Sequence[int]] = None
 
 
 class SageInferencePipeline:
@@ -49,6 +50,7 @@ class SageInferencePipeline:
         self.model_class_offsets = {k.lower(): v for k, v in settings.model_class_offsets.items()}
         self.model_num_classes = {k.lower(): v for k, v in settings.model_num_classes.items()}
         self.skip_existing_predictions = settings.skip_existing_predictions
+        self.allowed_folds = set(settings.allowed_folds) if settings.allowed_folds is not None else None
         self.enabled_models = None
         if settings.enabled_models:
             self.enabled_models = {name.lower() for name in settings.enabled_models}
@@ -105,6 +107,26 @@ class SageInferencePipeline:
             fold_match = _FOLD_REGEX.match(entry.name)
             if fold_match:
                 fold_idx = int(fold_match.group(1))
+                direct_weight_paths = [
+                    path
+                    for path in sorted(entry.iterdir())
+                    if path.is_file() and path.suffix.lower() in _WEIGHT_SUFFIXES
+                ]
+
+                # Support layouts like models_root/fold_1/best.pt when there is a single
+                # enabled model (for example YOLOv8-only runs).
+                if direct_weight_paths and self.enabled_models and len(self.enabled_models) == 1:
+                    model_name = next(iter(self.enabled_models))
+                    spec = specs_by_name.setdefault(model_name, ModelWeights(name=model_name))
+                    if fold_idx not in spec.fold_to_path:
+                        spec.fold_to_path[fold_idx] = direct_weight_paths[0]
+                    else:
+                        existing = spec.fold_to_path[fold_idx]
+                        print(
+                            f"[WARN] Model '{model_name}' already has weight for fold {fold_idx}. "
+                            f"Keeping '{existing}' and skipping '{direct_weight_paths[0]}'."
+                        )
+
                 for model_dir in sorted(entry.iterdir()):
                     if not model_dir.is_dir():
                         continue
@@ -250,6 +272,9 @@ class SageInferencePipeline:
             if not match:
                 continue
             fold_idx = int(match.group(1))
+            if self.allowed_folds is not None and fold_idx not in self.allowed_folds:
+                print(f"[INFO] Skipping {fold_dir.name} because it was filtered out during preflight validation.")
+                continue
             print(f"\n[INFO] Processing {fold_dir.name} (fold {fold_idx})")
             try:
                 test_dir = fold_dir / "test"

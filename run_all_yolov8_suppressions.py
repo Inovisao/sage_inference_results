@@ -5,8 +5,12 @@ import csv
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
 
+import cv2
+
 from calcula_estatisticas.evaluate_reconstructed import evaluate_results_root
 from pipeline import PipelineSettings, SageInferencePipeline
+from pipeline.coco_utils import build_image_lookup_by_stem, extract_original_images, load_coco_json
+from pipeline.data_prep import build_tile_index, parse_tile_filename
 from pipeline.types import SuppressionParams
 from utils.csv_utils import save_csv
 
@@ -34,6 +38,7 @@ COMPLETE_CONFIGS_HEADER = [
 ALL_SUPPRESSIONS: Sequence[str] = (
     "cluster_diou_ait",
     "nms",
+    "nms_ioa",
     "bws",
     "cluster_diou_nms",
     "cluster_diou_bws",
@@ -56,11 +61,15 @@ DATASET_CONFIGS: Dict[str, Dict[str, Path]] = {
         "models_root": PROJECT_ROOT / "pesos" / "sahi" / "model_checkpoints",
     },
     "slicing_common": {
-        "train_root": PROJECT_ROOT / "datasets" / "methods" / "resized",
-        "tiles_root": PROJECT_ROOT / "datasets" / "methods" / "slicing_common" / "folds",
-        "models_root": PROJECT_ROOT / "pesos" / "slicing_normal",
+        "train_root": PROJECT_ROOT / "datasets" / "all",
+        "tiles_root": PROJECT_ROOT / "datasets" / "methods" / "slicing_common",
+        "models_root": PROJECT_ROOT / "pesos" / "slicing_common",
     },
 }
+
+ALIGNMENT_DIFF_THRESHOLD = 5.0
+MIN_ALIGNMENT_SAMPLES = 20
+MIN_ALIGNMENT_RATIO = 0.9
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,10 +112,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Generate reconstructed mosaic images.",
     )
+    parser.add_argument("--tau-0", type=float, default=0.5, help="Base adaptive DIoU threshold.")
+    parser.add_argument("--alpha", type=float, default=0.1, help="Adaptive threshold sensitivity.")
+    parser.add_argument("--tau-min", type=float, default=0.3, help="Minimum adaptive DIoU threshold.")
+    parser.add_argument("--tau-dup", type=float, default=0.7, help="Duplicate DIoU threshold.")
+    parser.add_argument("--gamma", type=float, default=0.5, help="Minimum score ratio for duplicates.")
+    parser.add_argument("--topk", type=int, default=5, help="Number of nearest neighbors for local density.")
     parser.add_argument(
         "--no-resume",
         action="store_true",
         help="Disable checkpoint reuse and force regeneration of reconstructed predictions.",
+    )
+    parser.add_argument(
+        "--append-complete-csv",
+        action="store_true",
+        help=(
+            "Preserve the current row order in configuracoes_completas.csv and append any new "
+            "dataset/suppression/fold rows at the end instead of sorting the whole file."
+        ),
     )
     return parser.parse_args()
 
@@ -144,6 +167,8 @@ def run_pipeline(
     class_offset: int,
     create_mosaics: bool,
     resume: bool,
+    allowed_folds: Sequence[int] | None,
+    suppression_extra: Dict[str, float],
 ) -> tuple[Path, Path]:
     config = DATASET_CONFIGS[dataset_name]
     run_root = output_root / dataset_name / suppression_method
@@ -157,11 +182,12 @@ def run_pipeline(
         results_root=results_root,
         originals_root=originals_root,
         create_mosaics=create_mosaics,
-        suppression=SuppressionParams(method=suppression_method),
+        suppression=SuppressionParams(method=suppression_method, extra=suppression_extra),
         detection_thresholds={"yolov8": confidence},
         model_class_offsets={"yolov8": class_offset},
         enabled_models=("yolov8",),
         skip_existing_predictions=resume,
+        allowed_folds=allowed_folds,
     )
     SageInferencePipeline(settings).run()
     return dataset_root, results_root
@@ -229,6 +255,81 @@ def load_existing_complete_rows(output_root: Path) -> Dict[tuple[str, str, str, 
     return rows_by_key
 
 
+def _fold_alignment_score(
+    dataset_name: str,
+    fold_dir: Path,
+    original_lookup: Dict[str, object],
+) -> tuple[int, int, float | None]:
+    if dataset_name != "slicing_common":
+        return 0, 0, None
+
+    annotations_path = fold_dir / "test" / "_annotations.coco.json"
+    if not annotations_path.exists():
+        return 0, 0, None
+
+    coco = load_coco_json(annotations_path)
+    top_left_tiles: Dict[str, str] = {}
+    for image_entry in coco.get("images", []):
+        file_name = str(image_entry["file_name"])
+        stem, offset_x, offset_y = parse_tile_filename(file_name)
+        if offset_x == 0 and offset_y == 0 and stem not in top_left_tiles:
+            top_left_tiles[stem] = file_name
+
+    if not top_left_tiles:
+        return 0, 0, None
+
+    matched = 0
+    checked = 0
+    for stem, tile_name in top_left_tiles.items():
+        original = original_lookup.get(stem)
+        if original is None:
+            continue
+
+        tile_path = fold_dir / "test" / tile_name
+        original_path = DATASET_CONFIGS[dataset_name]["train_root"] / original.file_name
+        tile = cv2.imread(str(tile_path), cv2.IMREAD_GRAYSCALE)
+        original_image = cv2.imread(str(original_path), cv2.IMREAD_GRAYSCALE)
+        if tile is None or original_image is None:
+            continue
+
+        tile_small = cv2.resize(tile, (64, 64), interpolation=cv2.INTER_AREA)
+        patch = original_image[: tile.shape[0], : tile.shape[1]]
+        if patch.shape != tile.shape:
+            continue
+        patch_small = cv2.resize(patch, (64, 64), interpolation=cv2.INTER_AREA)
+        diff = float(cv2.absdiff(tile_small, patch_small).mean())
+        checked += 1
+        if diff <= ALIGNMENT_DIFF_THRESHOLD:
+            matched += 1
+
+    ratio = (matched / checked) if checked else None
+    return checked, matched, ratio
+
+
+def filter_rows_for_dataset(
+    rows_by_key: Dict[tuple[str, str, str, str], List[str]],
+    dataset_name: str,
+    valid_folds: Sequence[int],
+) -> Dict[tuple[str, str, str, str], List[str]]:
+    valid_fold_names = {f"fold{fold}" for fold in valid_folds}
+    filtered: Dict[tuple[str, str, str, str], List[str]] = {}
+    removed = 0
+    for key, row in rows_by_key.items():
+        row_dataset = key[0]
+        row_fold = key[3]
+        if row_dataset == dataset_name and row_fold not in valid_fold_names:
+            removed += 1
+            continue
+        filtered[key] = row
+
+    if removed:
+        print(
+            f"[INFO] Removed {removed} stale row(s) for dataset '{dataset_name}' "
+            f"from {COMPLETE_CONFIGS_CSV} because the fold is no longer considered valid."
+        )
+    return filtered
+
+
 def validate_paths(dataset_names: Iterable[str]) -> None:
     missing_paths: List[Path] = []
     for dataset_name in dataset_names:
@@ -242,12 +343,64 @@ def validate_paths(dataset_names: Iterable[str]) -> None:
         raise FileNotFoundError(f"Required paths were not found:\n{missing}")
 
 
+def discover_valid_folds(dataset_name: str) -> List[int]:
+    config = DATASET_CONFIGS[dataset_name]
+    train_coco = load_coco_json(config["train_root"] / "_annotations.coco.json")
+    original_lookup = build_image_lookup_by_stem(extract_original_images(train_coco))
+    valid_folds: List[int] = []
+
+    for fold_dir in sorted(p for p in config["tiles_root"].iterdir() if p.is_dir() and p.name.lower().startswith("fold")):
+        test_dir = fold_dir / "test"
+        try:
+            build_tile_index(test_dir, original_lookup)
+        except Exception as exc:
+            print(f"[WARN] Skipping {dataset_name}/{fold_dir.name} during preflight validation: {exc}")
+            continue
+
+        checked, matched, ratio = _fold_alignment_score(dataset_name, fold_dir, original_lookup)
+        if ratio is not None and checked >= MIN_ALIGNMENT_SAMPLES and ratio < MIN_ALIGNMENT_RATIO:
+            print(
+                f"[WARN] Skipping {dataset_name}/{fold_dir.name} during preflight validation: "
+                f"only {matched}/{checked} top-left tiles matched the claimed original image "
+                f"(ratio={ratio:.3f}). This fold appears to have mislabeled tiles."
+            )
+            continue
+
+        digits = "".join(ch for ch in fold_dir.name if ch.isdigit())
+        if digits:
+            valid_folds.append(int(digits))
+
+    return valid_folds
+
+
+def build_suppression_extra(args: argparse.Namespace) -> Dict[str, float]:
+    return {
+        "tau_0": float(args.tau_0),
+        "alpha": float(args.alpha),
+        "tau_min": float(args.tau_min),
+        "tau_dup": float(args.tau_dup),
+        "gamma": float(args.gamma),
+        "k": float(args.topk),
+    }
+
+
 def main() -> None:
     args = parse_args()
     validate_paths(args.datasets)
     complete_rows_by_key = load_existing_complete_rows(args.output_root)
+    suppression_extra = build_suppression_extra(args)
 
     for dataset_name in args.datasets:
+        valid_folds = discover_valid_folds(dataset_name)
+        complete_rows_by_key = filter_rows_for_dataset(complete_rows_by_key, dataset_name, valid_folds)
+        if not valid_folds:
+            print(f"[WARN] No valid folds found for dataset '{dataset_name}'. Skipping dataset.")
+            if args.append_complete_csv:
+                ordered_rows = list(complete_rows_by_key.values())
+            else:
+                ordered_rows = [row for _, row in sorted(complete_rows_by_key.items())]
+            write_complete_configurations_csv(args.output_root, ordered_rows)
+            continue
         for suppression_method in args.suppressions:
             print(f"\n[INFO] Dataset='{dataset_name}' Suppression='{suppression_method}'")
             dataset_root, results_root = run_pipeline(
@@ -258,6 +411,8 @@ def main() -> None:
                 class_offset=args.class_offset,
                 create_mosaics=args.create_mosaics,
                 resume=not args.no_resume,
+                allowed_folds=valid_folds,
+                suppression_extra=suppression_extra,
             )
             aggregate_rows = evaluate_results_root(dataset_root, results_root, ("yolov8",))
             for row in aggregate_rows:
@@ -266,8 +421,13 @@ def main() -> None:
                     suppression_method,
                     row,
                 )
+                if args.append_complete_csv and key in complete_rows_by_key:
+                    del complete_rows_by_key[key]
                 complete_rows_by_key[key] = complete_row
-            ordered_rows = [row for _, row in sorted(complete_rows_by_key.items())]
+            if args.append_complete_csv:
+                ordered_rows = list(complete_rows_by_key.values())
+            else:
+                ordered_rows = [row for _, row in sorted(complete_rows_by_key.items())]
             write_complete_configurations_csv(args.output_root, ordered_rows)
             print(f"[DONE] Results available at {results_root}")
 
