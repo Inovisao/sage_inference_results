@@ -45,11 +45,12 @@ def diou(box1, box2):
 def adaptive_cluster_diou_nms(
     boxes,
     scores,
-    T0=0.45,
+    tau_0=0.45,
     alpha=0.15,
     k=5,
-    score_ratio_thresh=0.85,
-    diou_dup_thresh=0.5,
+    tau_min=0.05,
+    tau_dup=0.5,
+    gamma=0.85,
 ):
     """
     Cluster-DIoU + Adaptive thresholding.
@@ -84,13 +85,13 @@ def adaptive_cluster_diou_nms(
             density = max(0.0, float(np.mean(topk)))
         else:
             density = 0.0
-        adaptive_thresh = max(0.05, T0 - alpha * density)
+        adaptive_thresh = max(tau_min, tau_0 - alpha * density)
 
         if anchor_score > 0:
             score_ratios = other_scores / anchor_score
         else:
             score_ratios = np.zeros_like(other_scores)
-        duplicate_mask = (dious > diou_dup_thresh) & (score_ratios >= score_ratio_thresh)
+        duplicate_mask = (dious > tau_dup) & (score_ratios >= gamma)
 
         keep_mask = (dious < adaptive_thresh) & (~duplicate_mask)
 

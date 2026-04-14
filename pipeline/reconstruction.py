@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
+from typing import Dict, List, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -13,6 +13,7 @@ from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
 from supression.cluster_diou_bws import cluster_diou_bws
 from supression.cluster_diou_nms import cluster_diou_nms
 from supression.nms import nms as suppression_nms
+from supression.nms_ioa import nms_ioa as suppression_nms_ioa
 
 from .coco_utils import save_coco_json
 from .types import (
@@ -45,10 +46,11 @@ def _clip_detection(det: DetectionRecord, *, width: int, height: int) -> Detecti
 # Supported suppression method names:
 #   - "cluster_diou_ait" / "adaptive_cluster_diou" / "ait"
 #   - "nms"
+#   - "nms_ioa" / "adaptive_diou_nms"
 #   - "bws"
 #   - "cluster_diou_nms" / "cluster_nms"
 #   - "cluster_diou_bws" / "cluster_bws"
-def _apply_nms_suppression(
+def _apply_suppression_by_method(
     detections: Sequence[DetectionRecord],
     *,
     image_width: int,
@@ -104,11 +106,12 @@ def _apply_nms_suppression(
             keep_indices = adaptive_cluster_diou_nms(
                 boxes,
                 scores,
-                T0=float(extra.get("T0", params.affinity_threshold)),
+                tau_0=float(extra.get("tau_0", params.affinity_threshold)),
                 alpha=float(extra.get("alpha", params.lambda_weight)),
                 k=int(extra.get("k", 5)),
-                score_ratio_thresh=float(extra.get("score_ratio_threshold", params.score_ratio_threshold)),
-                diou_dup_thresh=float(extra.get("duplicate_iou_threshold", params.duplicate_iou_threshold)),
+                tau_min=float(extra.get("tau_min", 0.05)),
+                gamma=float(extra.get("gamma", params.score_ratio_threshold)),
+                tau_dup=float(extra.get("tau_dup", params.duplicate_iou_threshold)),
             )
             for idx in keep_indices:
                 clipped = _box_to_detection(boxes[idx], scores[idx])
@@ -119,6 +122,25 @@ def _apply_nms_suppression(
         if method_key in {"nms"}:
             iou_thresh = float(extra.get("iou_threshold", params.iou_threshold))
             suppressed_boxes, suppressed_scores = suppression_nms(boxes, scores, iou_thresh=iou_thresh)
+            suppressed_boxes = np.atleast_2d(suppressed_boxes)
+            suppressed_scores = np.atleast_1d(suppressed_scores)
+            for box, score in zip(suppressed_boxes, suppressed_scores):
+                clipped = _box_to_detection(box, score)
+                if clipped:
+                    final.append(clipped)
+            continue
+
+        if method_key in {"nms_ioa", "adaptive_diou_nms", "diou_nms_ioa"}:
+            suppressed_boxes, suppressed_scores = suppression_nms_ioa(
+                boxes,
+                scores,
+                k=int(extra.get("k", 5)),
+                tau_0=float(extra.get("tau_0", params.affinity_threshold)),
+                alpha=float(extra.get("alpha", 0.1)),
+                tau_min=float(extra.get("tau_min", 0.3)),
+                tau_dup=float(extra.get("tau_dup", params.duplicate_iou_threshold)),
+                gamma=float(extra.get("gamma", params.score_ratio_threshold)),
+            )
             suppressed_boxes = np.atleast_2d(suppressed_boxes)
             suppressed_scores = np.atleast_1d(suppressed_scores)
             for box, score in zip(suppressed_boxes, suppressed_scores):
@@ -180,7 +202,7 @@ def apply_suppression(
     params: SuppressionParams,
 ) -> List[DetectionRecord]:
     """Public helper to run the configured suppression method."""
-    return _apply_nms_suppression(
+    return _apply_suppression_by_method(
         detections,
         image_width=image_width,
         image_height=image_height,
@@ -313,7 +335,7 @@ def build_prediction_dataset(
             detections = tile_predictions.get(tile.file_name, [])
             combined.extend(_project_tile_detections(tile, detections))
 
-        suppressed = _apply_nms_suppression(
+        suppressed = apply_suppression(
             combined,
             image_width=original_meta.width,
             image_height=original_meta.height,

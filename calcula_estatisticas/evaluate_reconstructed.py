@@ -5,13 +5,15 @@ import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
+from utils.fold_paths import resolve_ground_truth_path
 
 EPS = 1e-6
 IOU_DEFAULT = 0.5
 MAP_THRESHOLDS = [round(0.5 + 0.05 * i, 2) for i in range(10)]
+RESULTS_HEADER = ["model", "fold", "images", "precision", "recall", "f1", "mAP", "mAP50", "mAP75", "MAE", "RMSE"]
 
 
 @dataclass
@@ -105,6 +107,48 @@ def match_predictions(gt_boxes: Sequence[Sequence[float]], pred_boxes: Sequence[
     return MatchResult(tp=tp, fp=fp, fn=fn, matched_ious=matched_ious)
 
 
+def average_precision(gt_boxes: Sequence[Sequence[float]], preds: List[Tuple[List[float], float]], threshold: float) -> float:
+    if not gt_boxes:
+        return 0.0
+    if not preds:
+        return 0.0
+
+    sorted_preds = sorted(preds, key=lambda item: item[1], reverse=True)
+    matched_gt: set[int] = set()
+    tp_flags: List[int] = []
+    fp_flags: List[int] = []
+
+    for pred_box, _ in sorted_preds:
+        best_iou = 0.0
+        best_idx = None
+        for idx, gt_box in enumerate(gt_boxes):
+            if idx in matched_gt:
+                continue
+            current_iou = iou(pred_box, gt_box)
+            if current_iou > best_iou:
+                best_iou = current_iou
+                best_idx = idx
+
+        if best_idx is not None and best_iou >= threshold:
+            matched_gt.add(best_idx)
+            tp_flags.append(1)
+            fp_flags.append(0)
+        else:
+            tp_flags.append(0)
+            fp_flags.append(1)
+
+    tp_cumsum = np.cumsum(tp_flags)
+    fp_cumsum = np.cumsum(fp_flags)
+
+    recalls = tp_cumsum / max(len(gt_boxes), 1)
+    precisions = tp_cumsum / np.maximum(tp_cumsum + fp_cumsum, EPS)
+
+    recalls = np.concatenate(([0.0], recalls, [1.0]))
+    precisions = np.concatenate(([1.0], precisions, [0.0]))
+    precisions = np.maximum.accumulate(precisions[::-1])[::-1]
+    return float(np.sum((recalls[1:] - recalls[:-1]) * precisions[1:]))
+
+
 def evaluate_image(gt: Sequence[Sequence[float]], preds: List[Tuple[List[float], float]]) -> ImageMetrics:
     sorted_preds = sorted(preds, key=lambda item: item[1], reverse=True)
     pred_boxes = [p[0] for p in sorted_preds]
@@ -114,20 +158,17 @@ def evaluate_image(gt: Sequence[Sequence[float]], preds: List[Tuple[List[float],
     recall = match.tp / (match.tp + match.fn + EPS)
     f1 = 2 * precision * recall / (precision + recall + EPS)
 
-    match_50 = match_predictions(gt, pred_boxes, 0.5)
-    map50 = match_50.tp / (match_50.tp + match_50.fp + EPS)
-    match_75 = match_predictions(gt, pred_boxes, 0.75)
-    map75 = match_75.tp / (match_75.tp + match_75.fp + EPS)
+    map50 = average_precision(gt, sorted_preds, 0.5)
+    map75 = average_precision(gt, sorted_preds, 0.75)
 
     precisions = []
     for thr in MAP_THRESHOLDS:
-        result = match_predictions(gt, pred_boxes, thr)
-        precision_thr = result.tp / (result.tp + result.fp + EPS)
-        precisions.append(precision_thr)
+        precisions.append(average_precision(gt, sorted_preds, thr))
     map_all = float(sum(precisions) / len(precisions)) if precisions else 0.0
 
-    mae = abs(len(pred_boxes) - len(gt))
-    rmse = float(np.sqrt((len(pred_boxes) - len(gt)) ** 2))
+    count_error = len(pred_boxes) - len(gt)
+    mae = abs(count_error)
+    rmse = float(np.sqrt(count_error**2))
     avg_iou = float(sum(match.matched_ious) / len(match.matched_ious)) if match.matched_ious else 0.0
 
     return ImageMetrics(
@@ -160,7 +201,7 @@ def evaluate_fold(pred_path: Path, gt_path: Path) -> Tuple[List[ImageMetrics], I
     map75_list = []
     map_all_list = []
     mae_list = []
-    rmse_list = []
+    squared_error_list = []
     avg_ious = []
 
     for name in image_names:
@@ -177,7 +218,7 @@ def evaluate_fold(pred_path: Path, gt_path: Path) -> Tuple[List[ImageMetrics], I
         map75_list.append(metrics.map75)
         map_all_list.append(metrics.map_all)
         mae_list.append(metrics.mae)
-        rmse_list.append(metrics.rmse)
+        squared_error_list.append((metrics.pred_count - metrics.gt_count) ** 2)
         avg_ious.append(metrics.avg_iou)
 
     summary = ImageMetrics(
@@ -189,7 +230,7 @@ def evaluate_fold(pred_path: Path, gt_path: Path) -> Tuple[List[ImageMetrics], I
         map75=float(sum(map75_list) / len(map75_list)) if map75_list else 0.0,
         map_all=float(sum(map_all_list) / len(map_all_list)) if map_all_list else 0.0,
         mae=float(sum(mae_list) / len(mae_list)) if mae_list else 0.0,
-        rmse=float(sum(rmse_list) / len(rmse_list)) if rmse_list else 0.0,
+        rmse=float(np.sqrt(sum(squared_error_list) / len(squared_error_list))) if squared_error_list else 0.0,
         avg_iou=float(sum(avg_ious) / len(avg_ious)) if avg_ious else 0.0,
         pred_count=sum(m.pred_count for m in results),
         gt_count=sum(m.gt_count for m in results),
@@ -197,16 +238,40 @@ def evaluate_fold(pred_path: Path, gt_path: Path) -> Tuple[List[ImageMetrics], I
     return results, summary
 
 
+def _load_existing_results(csv_path: Path) -> Dict[Tuple[str, str], List[str]]:
+    if not csv_path.exists():
+        return {}
+
+    with csv_path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            return {}
+
+        rows_by_key: Dict[Tuple[str, str], List[str]] = {}
+        for row in reader:
+            model = (row.get("model") or "").strip()
+            fold = (row.get("fold") or "").strip()
+            if not model or not fold:
+                continue
+            rows_by_key[(model, fold)] = [row.get(column, "") for column in RESULTS_HEADER]
+    return rows_by_key
+
+
 def write_results_csv(results_root: Path, rows: List[List[str]]) -> None:
     csv_path = results_root / "results.csv"
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    header = ["model", "fold", "images", "precision", "recall", "f1", "mAP", "mAP50", "mAP75", "MAE", "RMSE"]
-    write_header = not csv_path.exists()
-    with csv_path.open("a", newline="", encoding="utf-8") as handle:
+
+    rows_by_key = _load_existing_results(csv_path)
+    for row in rows:
+        if len(row) != len(RESULTS_HEADER):
+            raise ValueError(f"Expected {len(RESULTS_HEADER)} columns, got {len(row)}: {row}")
+        key = (str(row[0]).strip(), str(row[1]).strip())
+        rows_by_key[key] = row
+
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        if write_header:
-            writer.writerow(header)
-        for row in rows:
+        writer.writerow(RESULTS_HEADER)
+        for _, row in sorted(rows_by_key.items()):
             writer.writerow(row)
     print(f"[INFO] Metrics written to {csv_path}")
 
@@ -255,11 +320,13 @@ def discover_models(results_root: Path, models: Sequence[str] | None) -> List[Pa
         raise FileNotFoundError(f"Reconstructed directory not found at {reconstructed_root}")
 
     if models:
+        available = {p.name.lower(): p for p in reconstructed_root.iterdir() if p.is_dir()}
         paths = []
         for name in models:
-            candidate = reconstructed_root / name
-            if not candidate.exists():
-                raise FileNotFoundError(f"Model directory '{candidate}' not found.")
+            candidate = available.get(str(name).lower())
+            if candidate is None:
+                expected = reconstructed_root / name
+                raise FileNotFoundError(f"Model directory '{expected}' not found.")
             paths.append(candidate)
         return paths
 
@@ -272,26 +339,12 @@ def discover_folds(model_dir: Path) -> List[Path]:
     return folds
 
 
-def fold_to_gt_path(dataset_root: Path, fold_name: str) -> Path:
-    fold_clean = fold_name.replace("_", "")
-    candidates = [
-        dataset_root / "imagens_originais" / fold_name / "_annotations.coco.json",
-        dataset_root / "imagens_originais" / fold_clean / "_annotations.coco.json",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError(f"Ground-truth annotations not found for fold '{fold_name}'. Checked: {candidates}")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate reconstructed predictions against ground truth.")
-    parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
-    parser.add_argument("--results-root", type=Path, default=Path("results"))
-    parser.add_argument("--models", nargs="*", help="Optional list of model names to evaluate.")
-    args = parser.parse_args()
-
-    model_dirs = discover_models(args.results_root, args.models)
+def evaluate_results_root(
+    dataset_root: Path,
+    results_root: Path,
+    models: Sequence[str] | None = None,
+) -> List[List[str]]:
+    model_dirs = discover_models(results_root, models)
     aggregate_rows: List[List[str]] = []
 
     for model_dir in model_dirs:
@@ -308,13 +361,13 @@ def main() -> None:
                 print(f"[WARN] Predictions not found at {pred_path}. Skipping.")
                 continue
 
-            gt_path = fold_to_gt_path(args.dataset_root, fold_name)
+            gt_path = resolve_ground_truth_path(dataset_root, fold_name)
             print(f"\n[INFO] Evaluating model '{model_name}' on {fold_name}")
             print(f"       Predictions: {pred_path}")
             print(f"       Ground truth: {gt_path}")
 
             per_image, summary = evaluate_fold(pred_path, gt_path)
-            write_details_csv(args.results_root, model_name, fold_name, per_image)
+            write_details_csv(results_root, model_name, fold_name, per_image)
 
             aggregate_rows.append([
                 model_name,
@@ -331,9 +384,20 @@ def main() -> None:
             ])
 
     if aggregate_rows:
-        write_results_csv(args.results_root, aggregate_rows)
+        write_results_csv(results_root, aggregate_rows)
     else:
         print("[WARN] No evaluation rows generated.")
+
+    return aggregate_rows
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate reconstructed predictions against ground truth.")
+    parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
+    parser.add_argument("--results-root", type=Path, default=Path("results"))
+    parser.add_argument("--models", nargs="*", help="Optional list of model names to evaluate.")
+    args = parser.parse_args()
+    evaluate_results_root(args.dataset_root, args.results_root, args.models)
 
 
 if __name__ == "__main__":

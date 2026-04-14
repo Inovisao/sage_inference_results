@@ -9,6 +9,24 @@ from .types import OriginalImage
 JsonDict = MutableMapping[str, object]
 
 
+def _stem_aliases(file_name: str) -> List[str]:
+    stem = Path(file_name).stem
+    aliases = [stem]
+    markers = (
+        "_jpg.rf.",
+        "_jpeg.rf.",
+        "_png.rf.",
+        "_bmp.rf.",
+        "_tif.rf.",
+        "_tiff.rf.",
+    )
+    for marker in markers:
+        if marker in stem:
+            aliases.append(stem.split(marker, 1)[0])
+            break
+    return aliases
+
+
 def load_coco_json(path: Path) -> JsonDict:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -40,16 +58,9 @@ def extract_original_images(coco: Mapping[str, object]) -> Dict[str, OriginalIma
 def build_image_lookup_by_stem(images: Mapping[str, OriginalImage]) -> Dict[str, OriginalImage]:
     lookup = {}
     for img in images.values():
-        lookup[img.stem] = img
+        for alias in _stem_aliases(img.file_name):
+            lookup[alias] = img
     return lookup
-
-
-def group_annotations_by_image(coco: Mapping[str, object]) -> Dict[int, List[MutableMapping[str, object]]]:
-    by_image: Dict[int, List[MutableMapping[str, object]]] = {}
-    for ann in coco.get("annotations", []):
-        image_id = int(ann["image_id"])
-        by_image.setdefault(image_id, []).append(dict(ann))
-    return by_image
 
 
 def filter_coco_dataset(
@@ -88,13 +99,3 @@ def filter_coco_dataset(
         "categories": coco.get("categories", []),
     }
     return dataset
-
-
-def create_empty_coco_template() -> JsonDict:
-    return {
-        "info": {},
-        "licenses": [],
-        "images": [],
-        "annotations": [],
-        "categories": [],
-    }

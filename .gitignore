@@ -1,5 +1,5 @@
 detectors/*
-dataset/*
+datasets/*
 */__pycache__
 pesos
 __pycache__/debug_single_image.cpython-311.pyc
@@ -9,3 +9,4 @@ results/*
 original_images_test
 model_checkpoints
 teste
+runs/
