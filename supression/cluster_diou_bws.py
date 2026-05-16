@@ -5,9 +5,10 @@ from .cluster_diou_nms import compute_diou
 
 def cluster_diou_bws(boxes, scores, affinity_thresh=0.5, lambda_weight=0.6):
     """
-    Cluster-DIoU-BWS híbrido:
-    Agrupa caixas por afinidade geométrica local e realiza média ponderada.
-    e média ponderada das caixas em cada cluster.
+    Hybrid Cluster-DIoU-BWS.
+
+    Group boxes by local geometric affinity and apply weighted box averaging
+    inside each cluster.
     """
     if len(boxes) == 0:
         return np.empty((0, 4), dtype=np.float32), np.empty((0,), dtype=np.float32)
@@ -34,7 +35,7 @@ def cluster_diou_bws(boxes, scores, affinity_thresh=0.5, lambda_weight=0.6):
                 cluster.append(j)
                 used.add(j)
 
-        # Combina via média ponderada (BWS)
+        # Merge boxes through weighted box averaging (BWS).
         cluster_boxes = boxes[cluster]
         cluster_scores = scores[cluster]
         score_sum = float(cluster_scores.sum())

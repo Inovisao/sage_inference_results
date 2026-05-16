@@ -10,3 +10,23 @@ original_images_test
 model_checkpoints
 teste
 runs/
+
+# Dataset images and generated visual artifacts
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tif
+*.tiff
+*.webp
+*.gif
+
+# Common annotation artifacts
+*.coco.json
+annotations.json
+annotations/*.json
+*/annotations/*.json
+labels/*.txt
+*/labels/*.txt
+*.xml
+.codex

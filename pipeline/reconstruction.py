@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Mapping, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -15,11 +16,11 @@ from supression.cluster_diou_nms import cluster_diou_nms
 from supression.nms import nms as suppression_nms
 from supression.nms_ioa import nms_ioa as suppression_nms_ioa
 
-from .coco_utils import save_coco_json
 from .types import (
     DetectionRecord,
     OriginalImage,
     OriginalToTiles,
+    ReconstructionStats,
     SuppressionParams,
     TileDetections,
     TileMetadata,
@@ -44,10 +45,8 @@ def _clip_detection(det: DetectionRecord, *, width: int, height: int) -> Detecti
 
 
 # Supported suppression method names:
-#   - "cluster_diou_ait" / "adaptive_cluster_diou" / "ait"
 #   - "nms"
-#   - "nms_ioa" / "adaptive_diou_nms"
-#   - "bws"
+#   - "nms_ioa"
 #   - "cluster_diou_nms" / "cluster_nms"
 #   - "cluster_diou_bws" / "cluster_bws"
 def _apply_suppression_by_method(
@@ -60,7 +59,7 @@ def _apply_suppression_by_method(
     if not detections:
         return []
 
-    method = getattr(params, "method", "cluster_diou_ait")
+    method = getattr(params, "method", "cluster_diou_nms")
     method_key = str(method).lower().replace("-", "_")
     extra = getattr(params, "extra", {}) or {}
 
@@ -130,16 +129,13 @@ def _apply_suppression_by_method(
                     final.append(clipped)
             continue
 
-        if method_key in {"nms_ioa", "adaptive_diou_nms", "diou_nms_ioa"}:
+        if method_key in {"nms_ioa"}:
             suppressed_boxes, suppressed_scores = suppression_nms_ioa(
                 boxes,
                 scores,
-                k=int(extra.get("k", 5)),
-                tau_0=float(extra.get("tau_0", params.affinity_threshold)),
-                alpha=float(extra.get("alpha", 0.1)),
-                tau_min=float(extra.get("tau_min", 0.3)),
-                tau_dup=float(extra.get("tau_dup", params.duplicate_iou_threshold)),
-                gamma=float(extra.get("gamma", params.score_ratio_threshold)),
+                ioa_thresh=float(extra.get("ioa_threshold", params.iou_threshold)),
+                conf_threshold=float(extra.get("conf_threshold", 0.4)),
+                sigma=float(extra.get("sigma", 0.5)),
             )
             suppressed_boxes = np.atleast_2d(suppressed_boxes)
             suppressed_scores = np.atleast_1d(suppressed_scores)
@@ -237,6 +233,131 @@ def _reconstruct_image(original: OriginalImage, tiles: Sequence[TileMetadata], o
     canvas.save(output_path)
 
 
+def _reconstruct_image_array(original: OriginalImage, tiles: Sequence[TileMetadata]) -> np.ndarray:
+    canvas = np.zeros((int(original.height), int(original.width), 3), dtype=np.uint8)
+    for tile in tiles:
+        tile_image = cv2.imread(str(tile.path))
+        if tile_image is None:
+            raise FileNotFoundError(f"Unable to read tile image '{tile.path}'.")
+        tile_h, tile_w = tile_image.shape[:2]
+        y1 = int(tile.offset_y)
+        y2 = min(int(tile.offset_y) + tile_h, canvas.shape[0])
+        x1 = int(tile.offset_x)
+        x2 = min(int(tile.offset_x) + tile_w, canvas.shape[1])
+        canvas[y1:y2, x1:x2] = tile_image[: max(0, y2 - y1), : max(0, x2 - x1)]
+    return canvas
+
+
+def _build_visualization_background(
+    original: OriginalImage,
+    tiles: Sequence[TileMetadata],
+    source_images_dir: Optional[Path],
+) -> np.ndarray:
+    if source_images_dir is not None:
+        source_path = source_images_dir / original.file_name
+        if source_path.exists():
+            image = cv2.imread(str(source_path))
+            if image is not None:
+                return image
+    return _reconstruct_image_array(original, tiles)
+
+
+def _draw_detections(
+    image: np.ndarray,
+    detections: Sequence[DetectionRecord],
+) -> np.ndarray:
+    rendered = image.copy()
+    for det in detections:
+        x1 = int(round(det.x))
+        y1 = int(round(det.y))
+        x2 = int(round(det.x + det.width))
+        y2 = int(round(det.y + det.height))
+        cv2.rectangle(rendered, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        label = f"{det.category_id}:{det.score:.2f}"
+        cv2.putText(
+            rendered,
+            label,
+            (x1, max(0, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+    return rendered
+
+
+def _save_visualization(
+    original: OriginalImage,
+    tiles: Sequence[TileMetadata],
+    detections: Sequence[DetectionRecord],
+    *,
+    output_path: Path,
+    source_images_dir: Optional[Path],
+) -> None:
+    background = _build_visualization_background(original, tiles, source_images_dir)
+    rendered = _draw_detections(background, detections)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), rendered)
+
+
+def render_visualizations_from_dataset(
+    *,
+    prediction_dataset: Mapping[str, object],
+    fold_original_to_tiles: OriginalToTiles,
+    original_images: Mapping[str, OriginalImage],
+    output_images_dir: Path,
+    source_images_dir: Optional[Path] = None,
+    create_mosaics: bool = False,
+) -> None:
+    """Render final reconstructed images from an already saved COCO prediction dataset."""
+
+    image_id_to_name: Dict[int, str] = {}
+    for image_entry in prediction_dataset.get("images", []):
+        try:
+            image_id = int(image_entry["id"])
+            file_name = str(image_entry["file_name"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        image_id_to_name[image_id] = file_name
+
+    detections_by_image: Dict[str, List[DetectionRecord]] = defaultdict(list)
+    for ann in prediction_dataset.get("annotations", []):
+        try:
+            image_id = int(ann["image_id"])
+            file_name = image_id_to_name[image_id]
+            bbox = ann["bbox"]
+            detections_by_image[file_name].append(
+                DetectionRecord(
+                    x=float(bbox[0]),
+                    y=float(bbox[1]),
+                    width=float(bbox[2]),
+                    height=float(bbox[3]),
+                    score=float(ann.get("score", 0.0)),
+                    category_id=int(ann["category_id"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+
+    for original_name, tiles in fold_original_to_tiles.items():
+        original_meta = original_images.get(original_name)
+        if original_meta is None:
+            continue
+
+        _save_visualization(
+            original_meta,
+            tiles,
+            detections_by_image.get(original_name, []),
+            output_path=output_images_dir / original_name,
+            source_images_dir=source_images_dir,
+        )
+
+        if create_mosaics:
+            mosaic_output_path = output_images_dir.parent / "mosaics" / original_name
+            _reconstruct_image(original_meta, tiles, mosaic_output_path)
+
+
 def detect_tile_orientation(
     original_image: np.ndarray,
     *,
@@ -315,15 +436,18 @@ def build_prediction_dataset(
     original_images: Mapping[str, OriginalImage],
     base_coco: Mapping[str, object],
     output_images_dir: Path,
+    source_images_dir: Optional[Path] = None,
     create_mosaics: bool = False,
     orientation_by_image: Optional[Mapping[str, int]] = None,
-) -> Mapping[str, object]:
+) -> tuple[Mapping[str, object], ReconstructionStats]:
     """
     Combine tile detections into original-image predictions and return a COCO-like dict.
     """
 
     annotations: List[MutableMapping[str, object]] = []
     ann_id = 0
+    suppression_time_s = 0.0
+    build_start = time.perf_counter()
 
     for original_name, tiles in fold_original_to_tiles.items():
         original_meta = original_images.get(original_name)
@@ -335,12 +459,14 @@ def build_prediction_dataset(
             detections = tile_predictions.get(tile.file_name, [])
             combined.extend(_project_tile_detections(tile, detections))
 
+        suppression_start = time.perf_counter()
         suppressed = apply_suppression(
             combined,
             image_width=original_meta.width,
             image_height=original_meta.height,
             params=suppression,
         )
+        suppression_time_s += time.perf_counter() - suppression_start
 
         if orientation_by_image:
             angle = int(orientation_by_image.get(original_name, 0))
@@ -365,9 +491,18 @@ def build_prediction_dataset(
             )
             ann_id += 1
 
+        visualization_output = output_images_dir / original_name
+        _save_visualization(
+            original_meta,
+            tiles,
+            suppressed,
+            output_path=visualization_output,
+            source_images_dir=source_images_dir,
+        )
+
         if create_mosaics:
-            output_path = output_images_dir / original_name
-            _reconstruct_image(original_meta, tiles, output_path)
+            mosaic_output_path = output_images_dir.parent / "mosaics" / original_name
+            _reconstruct_image(original_meta, tiles, mosaic_output_path)
 
     dataset = {
         "info": base_coco.get("info", {}),
@@ -376,4 +511,11 @@ def build_prediction_dataset(
         "annotations": annotations,
         "categories": base_coco.get("categories", []),
     }
-    return dataset
+    total_time_s = time.perf_counter() - build_start
+    stats = ReconstructionStats(
+        original_image_count=len(fold_original_to_tiles),
+        annotation_count=len(annotations),
+        suppression_time_s=total_time_s if suppression_time_s > total_time_s else suppression_time_s,
+        total_time_s=total_time_s,
+    )
+    return dataset, stats

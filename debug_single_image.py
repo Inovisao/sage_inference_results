@@ -172,8 +172,12 @@ def main() -> None:
     extra_kwargs = {}
     if detector_cls.model_name in {"faster", "fasterrcnn"}:
         # Infer num_classes from the dataset
-        coco_path = dataset_root / "train" / "_annotations.coco.json"
-        if coco_path.exists():
+        coco_candidates = [
+            dataset_root / "all" / "_annotations.coco.json",
+            dataset_root / "train" / "_annotations.coco.json",
+        ]
+        coco_path = next((path for path in coco_candidates if path.exists()), None)
+        if coco_path is not None:
             import json
             with open(coco_path, 'r') as f:
                 coco_data = json.load(f)
@@ -208,7 +212,11 @@ def main() -> None:
 
     print(
         f"[INFO] Total projected detections before suppression: {len(aggregated)}")
-    original_image_path = dataset_root / "train" / args.image_name
+    candidate_original_paths = [
+        dataset_root / "all" / args.image_name,
+        dataset_root / "train" / args.image_name,
+    ]
+    original_image_path = next((path for path in candidate_original_paths if path.exists()), candidate_original_paths[0])
     original_image = cv2.imread(str(original_image_path))
     if original_image is None:
         raise FileNotFoundError(

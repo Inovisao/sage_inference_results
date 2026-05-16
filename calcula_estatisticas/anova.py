@@ -11,14 +11,14 @@ from statsmodels.formula.api import ols
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 
 # -------------------------------------------------------------
-# CONFIGURAÇÕES INICIAIS
+# INITIAL SETTINGS
 # -------------------------------------------------------------
 os.makedirs("../results", exist_ok=True)
 output_file = "../results/anova_all_results.txt"
 open(output_file, "w").close()  # limpa o arquivo
 
 # -------------------------------------------------------------
-# 1. BOXPLOT DE MÉTRICAS DE DESEMPENHO
+# 1. PERFORMANCE METRICS BOXPLOT
 # -------------------------------------------------------------
 dados = pd.read_csv("../results/results.csv")
 
@@ -49,7 +49,7 @@ plt.savefig("../results/boxplot.png", dpi=300)
 plt.close()
 
 # -------------------------------------------------------------
-# 2. CONTAGEM MANUAL x AUTOMÁTICA (RMSE, MAE, MAPE, r)
+# 2. MANUAL VS AUTOMATIC COUNTING (RMSE, MAE, MAPE, r)
 # -------------------------------------------------------------
 dados_contagem = pd.read_csv("../results/counting.csv")
 modelos = dados_contagem["ml"].unique()
@@ -83,7 +83,7 @@ rmse_df = pd.DataFrame(rmse_values)
 rmse_df.to_csv("../results/rmse_values.csv", index=False)
 
 # -------------------------------------------------------------
-# 3. FUNÇÃO ANOVA + TUKEY
+# 3. ANOVA + TUKEY FUNCTION
 # -------------------------------------------------------------
 def realizar_anova(df, metric, output_file):
     with open(output_file, "a") as f:
@@ -106,7 +106,7 @@ def realizar_anova(df, metric, output_file):
             f.write(f"Erro ao realizar ANOVA para {metric}: {e}\n")
 
 # -------------------------------------------------------------
-# 4. EXECUTAR ANOVA PARA TODAS AS MÉTRICAS
+# 4. RUN ANOVA FOR ALL METRICS
 # -------------------------------------------------------------
 metrics = ["mAP", "mAP50", "mAP75", "MAE", "RMSE", "precision", "recall", "f1"]
 

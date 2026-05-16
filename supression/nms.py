@@ -1,7 +1,7 @@
 import numpy as np
 
 def compute_iou(box1, box2):
-    """Calcula IoU entre duas caixas [x1, y1, x2, y2]."""
+    """Calculate IoU between two [x1, y1, x2, y2] boxes."""
     x1 = max(box1[0], box2[0])
     y1 = max(box1[1], box2[1])
     x2 = min(box1[2], box2[2])
@@ -19,7 +19,7 @@ def compute_iou(box1, box2):
 
 
 def nms(boxes, scores, iou_thresh=0.5):
-    """Supressão padrão por IoU."""
+    """Standard IoU-based non-maximum suppression."""
     indices = np.argsort(scores)[::-1]
     keep = []
 

@@ -221,11 +221,11 @@ class FasterRCNNDetector(BaseDetector):
                     else model_obj
                 )
 
-        # Caso 3: YOLOv8 ou outro modelo salvo inteiro
+        # Case 3: YOLOv8 or another fully saved model.
         elif hasattr(checkpoint, "state_dict"):
             state_dict = checkpoint.state_dict()
 
-        # Caso não identificado
+        # Unrecognized case.
         if state_dict is None:
             raise RuntimeError(
                 f"Unsupported checkpoint format at {self.weight_path}. "

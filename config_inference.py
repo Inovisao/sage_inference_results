@@ -9,8 +9,8 @@ from pipeline.types import SuppressionParams
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Models to execute in order. Entries must match the folder names inside `model_checkpoints`.
-ENABLED_MODELS: Sequence[str] = ("yolov8", "tph_yolov5", "faster_rcnn")
+# Models to execute in order. Leave empty/None to execute every model found in `pesos/`.
+ENABLED_MODELS: Sequence[str] = ()
 
 # Toggle generation of reconstructed mosaics for each original image.
 CREATE_MOSAICS = True
@@ -24,8 +24,10 @@ DETECTOR_ALIASES = {
 # Override per-model detection thresholds (optional).
 DETECTION_THRESHOLDS = {
     "yolov8": 0.25,
+    "yolov11": 0.25,
     "yolov5_tph": 0.25,
     "faster": 0.5,
+    "retinanet": 0.3,
 }
 
 # Add class offsets when the detector output class indices need shifting.
@@ -41,14 +43,13 @@ MODEL_NUM_CLASSES = {
 }
 
 # Supported suppression method names:
-#   - "cluster_diou_ait" / "adaptive_cluster_diou" / "ait"
-#   - "nms"
-#   - "bws"
 #   - "cluster_diou_nms" / "cluster_nms"
 #   - "cluster_diou_bws" / "cluster_bws"
-SUPPRESSION_METHOD = "cluster_diou_ait"
+#   - "nms"
+#   - "nms_ioa"
+SUPPRESSION_METHOD = "cluster_diou_nms"
 SUPPRESSION_EXTRA = {
-    # Example: "k": 7 to tweak neighbourhood size for adaptive thresholding
+    # Example for nms_ioa: "ioa_threshold": 0.75, "conf_threshold": 0.4
 }
 SUPPRESSION_PARAMS = SuppressionParams(
     method=SUPPRESSION_METHOD,
@@ -66,16 +67,18 @@ def load_config(project_root: Path | None = None) -> PipelineSettings:
     root = project_root or PROJECT_ROOT
     return PipelineSettings(
         dataset_root=root / "dataset",
-        models_root=root / "model_checkpoints",
+        models_root=root / "pesos",
         results_root=root / "results",
-        originals_root=root / "original_images_test",
+        originals_root=root / "dataset" / "imagens_originais",
+        source_images_root=root / "dataset" / "all",
         create_mosaics=CREATE_MOSAICS,
         suppression=SUPPRESSION_PARAMS,
         detection_thresholds=DETECTION_THRESHOLDS,
         model_class_offsets=MODEL_CLASS_OFFSETS,
-        enabled_models=ENABLED_MODELS,
+        enabled_models=ENABLED_MODELS or None,
         detector_name_aliases=DETECTOR_ALIASES,
         model_num_classes=MODEL_NUM_CLASSES,
+        dataset_name="sage",
     )
 
 

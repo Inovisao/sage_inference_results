@@ -1,22 +1,20 @@
 """
-Utilities to orchestrate the SAGE inference → reconstruction → evaluation pipeline.
+Core modules for the SAGE inference pipeline.
 
-The package is organised in the following submodules:
-
-```
-pipeline/
-    __init__.py          - package marker and convenience exports
-    coco_utils.py        - helpers for COCO JSON loading/filtering
-    data_prep.py         - discovery of folds, tiles, and original images
-    detectors.py         - model-specific inference wrappers
-    reconstruction.py    - reprojection of detections + suppression logic
-    orchestrator.py      - high-level pipeline coordination
-    types.py             - dataclasses shared across modules
-```
-
-The entrypoint for most workflows is :class:`pipeline.orchestrator.SageInferencePipeline`.
+This package intentionally avoids eager imports so submodules such as
+`pipeline.reporting` and `pipeline.reconstruction` can be imported without
+pulling in legacy orchestration code.
 """
 
-from .orchestrator import PipelineSettings, SageInferencePipeline
+from __future__ import annotations
 
-__all__ = ["SageInferencePipeline", "PipelineSettings"]
+from importlib import import_module
+
+__all__ = ["PipelineSettings", "SageInferencePipeline"]
+
+
+def __getattr__(name: str):
+    if name in {"PipelineSettings", "SageInferencePipeline"}:
+        module = import_module("pipeline.orchestrator")
+        return getattr(module, name)
+    raise AttributeError(f"module 'pipeline' has no attribute {name!r}")

@@ -36,12 +36,10 @@ COMPLETE_CONFIGS_HEADER = [
     "r",
 ]
 ALL_SUPPRESSIONS: Sequence[str] = (
-    "cluster_diou_ait",
-    "nms",
-    "nms_ioa",
-    "bws",
     "cluster_diou_nms",
     "cluster_diou_bws",
+    "nms",
+    "nms_ioa",
 )
 
 DATASET_CONFIGS: Dict[str, Dict[str, Path]] = {

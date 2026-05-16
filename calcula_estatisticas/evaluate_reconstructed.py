@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
+from pipeline.reporting import write_fold_result, write_image_results, write_summary_reports
 from utils.fold_paths import resolve_ground_truth_path
 
 EPS = 1e-6
@@ -333,6 +335,41 @@ def discover_models(results_root: Path, models: Sequence[str] | None) -> List[Pa
     return [p for p in reconstructed_root.iterdir() if p.is_dir()]
 
 
+def discover_prediction_runs(
+    results_root: Path,
+    models: Sequence[str] | None = None,
+) -> List[Tuple[str, str, Path]]:
+    reconstructed_root = results_root / "reconstructed"
+    if not reconstructed_root.exists():
+        raise FileNotFoundError(f"Reconstructed directory not found at {reconstructed_root}")
+
+    requested = {name.lower() for name in models} if models else None
+    runs: List[Tuple[str, str, Path]] = []
+
+    for entry in sorted(reconstructed_root.iterdir()):
+        if not entry.is_dir():
+            continue
+
+        direct_folds = [p for p in entry.iterdir() if p.is_dir() and p.name.lower().startswith("fold")]
+        if direct_folds:
+            model_name = entry.name
+            if requested and model_name.lower() not in requested:
+                continue
+            for fold_dir in discover_folds(entry):
+                runs.append(("legacy", model_name, fold_dir))
+            continue
+
+        suppression_name = entry.name
+        for model_dir in sorted([p for p in entry.iterdir() if p.is_dir()]):
+            model_name = model_dir.name
+            if requested and model_name.lower() not in requested:
+                continue
+            for fold_dir in discover_folds(model_dir):
+                runs.append((suppression_name, model_name, fold_dir))
+
+    return runs
+
+
 def discover_folds(model_dir: Path) -> List[Path]:
     folds = [p for p in model_dir.iterdir() if p.is_dir() and p.name.lower().startswith("fold")]
     folds.sort(key=lambda path: path.name)
@@ -344,47 +381,101 @@ def evaluate_results_root(
     results_root: Path,
     models: Sequence[str] | None = None,
 ) -> List[List[str]]:
-    model_dirs = discover_models(results_root, models)
     aggregate_rows: List[List[str]] = []
+    created_at = datetime.now().isoformat(timespec="seconds")
+    reports_root = results_root / "reports"
 
-    for model_dir in model_dirs:
-        model_name = model_dir.name
-        fold_dirs = discover_folds(model_dir)
-        if not fold_dirs:
-            print(f"[WARN] No folds found for model '{model_name}'. Skipping.")
+    for suppression_name, model_name, fold_dir in discover_prediction_runs(results_root, models):
+        fold_name = fold_dir.name
+        pred_path = fold_dir / "_annotations.coco.json"
+        if not pred_path.exists():
+            print(f"[WARN] Predictions not found at {pred_path}. Skipping.")
             continue
 
-        for fold_dir in fold_dirs:
-            fold_name = fold_dir.name
-            pred_path = fold_dir / "_annotations.coco.json"
-            if not pred_path.exists():
-                print(f"[WARN] Predictions not found at {pred_path}. Skipping.")
-                continue
+        gt_path = resolve_ground_truth_path(dataset_root, fold_name)
+        display_name = model_name if suppression_name == "legacy" else f"{model_name}[{suppression_name}]"
+        print(f"\n[INFO] Evaluating model '{display_name}' on {fold_name}")
+        print(f"       Predictions: {pred_path}")
+        print(f"       Ground truth: {gt_path}")
 
-            gt_path = resolve_ground_truth_path(dataset_root, fold_name)
-            print(f"\n[INFO] Evaluating model '{model_name}' on {fold_name}")
-            print(f"       Predictions: {pred_path}")
-            print(f"       Ground truth: {gt_path}")
+        per_image, summary = evaluate_fold(pred_path, gt_path)
+        details_model_name = model_name if suppression_name == "legacy" else f"{suppression_name}_{model_name}"
+        write_details_csv(results_root, details_model_name, fold_name, per_image)
 
-            per_image, summary = evaluate_fold(pred_path, gt_path)
-            write_details_csv(results_root, model_name, fold_name, per_image)
+        aggregate_rows.append([
+            display_name,
+            fold_name,
+            str(len(per_image)),
+            f"{summary.precision:.6f}",
+            f"{summary.recall:.6f}",
+            f"{summary.f1:.6f}",
+            f"{summary.map_all:.6f}",
+            f"{summary.map50:.6f}",
+            f"{summary.map75:.6f}",
+            f"{summary.mae:.6f}",
+            f"{summary.rmse:.6f}",
+        ])
 
-            aggregate_rows.append([
-                model_name,
-                fold_name,
-                str(len(per_image)),
-                f"{summary.precision:.6f}",
-                f"{summary.recall:.6f}",
-                f"{summary.f1:.6f}",
-                f"{summary.map_all:.6f}",
-                f"{summary.map50:.6f}",
-                f"{summary.map75:.6f}",
-                f"{summary.mae:.6f}",
-                f"{summary.rmse:.6f}",
-            ])
+        write_fold_result(
+            reports_root,
+            {
+                "dataset": dataset_root.name,
+                "suppression": suppression_name,
+                "model": model_name,
+                "fold": fold_name,
+                "split": "test",
+                "weight_path": "",
+                "train_annotations": "",
+                "val_annotations": "",
+                "test_annotations": str(gt_path),
+                "images": len([metric for metric in per_image if metric.image_name != "__summary__"]),
+                "tiles": "",
+                "precision": f"{summary.precision:.6f}",
+                "recall": f"{summary.recall:.6f}",
+                "f1": f"{summary.f1:.6f}",
+                "mAP": f"{summary.map_all:.6f}",
+                "mAP50": f"{summary.map50:.6f}",
+                "mAP75": f"{summary.map75:.6f}",
+                "MAE": f"{summary.mae:.6f}",
+                "RMSE": f"{summary.rmse:.6f}",
+                "model_load_time_s": "",
+                "tile_inference_time_s": "",
+                "reconstruction_time_s": "",
+                "suppression_time_s": "",
+                "evaluation_time_s": "",
+                "total_time_s": "",
+                "created_at": created_at,
+            },
+        )
+        write_image_results(
+            reports_root,
+            [
+                {
+                    "dataset": dataset_root.name,
+                    "suppression": suppression_name,
+                    "model": model_name,
+                    "fold": fold_name,
+                    "image_name": metric.image_name,
+                    "precision": f"{metric.precision:.6f}",
+                    "recall": f"{metric.recall:.6f}",
+                    "f1": f"{metric.f1:.6f}",
+                    "mAP50": f"{metric.map50:.6f}",
+                    "mAP75": f"{metric.map75:.6f}",
+                    "mAP": f"{metric.map_all:.6f}",
+                    "MAE": f"{metric.mae:.6f}",
+                    "RMSE": f"{metric.rmse:.6f}",
+                    "pred_count": metric.pred_count,
+                    "gt_count": metric.gt_count,
+                    "avg_iou": f"{metric.avg_iou:.6f}",
+                }
+                for metric in per_image
+                if metric.image_name != "__summary__"
+            ],
+        )
 
     if aggregate_rows:
         write_results_csv(results_root, aggregate_rows)
+        write_summary_reports(reports_root)
     else:
         print("[WARN] No evaluation rows generated.")
 

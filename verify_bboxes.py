@@ -100,6 +100,12 @@ def main() -> None:
     )
     parser.add_argument("--results-root", type=Path, default=Path("results"))
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
+    parser.add_argument(
+        "--suppression",
+        type=str,
+        default="cluster_diou_ait",
+        help="Suppression method folder under results/reconstructed.",
+    )
     parser.add_argument("--model", type=str, default="yolov8")
     parser.add_argument("--fold", type=str, default="fold5")
     parser.add_argument("--image-name", type=str, help="Optional image file name to visualise.")
@@ -112,7 +118,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    reconstructed_dir = args.results_root / "reconstructed" / args.model / args.fold
+    reconstructed_dir = args.results_root / "reconstructed" / args.suppression / args.model / args.fold
+    if not reconstructed_dir.exists():
+        alt_fold = args.fold.replace("_", "")
+        reconstructed_dir = args.results_root / "reconstructed" / args.suppression / args.model / alt_fold
+    if not reconstructed_dir.exists():
+        # Backwards compatibility with the old layout: results/reconstructed/<model>/<fold>
+        reconstructed_dir = args.results_root / "reconstructed" / args.model / args.fold
     if not reconstructed_dir.exists():
         alt_fold = args.fold.replace("_", "")
         reconstructed_dir = args.results_root / "reconstructed" / args.model / alt_fold
@@ -131,6 +143,7 @@ def main() -> None:
 
     image_path_candidates = [
         reconstructed_dir / "images" / image_name,
+        args.dataset_root / "all" / image_name,
         args.dataset_root / "train" / image_name,
     ]
 

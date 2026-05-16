@@ -111,8 +111,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--method",
         type=str,
-        default="cluster_diou_ait",
-        help="Suppression method (cluster_diou_ait, nms, bws, cluster_diou_nms, cluster_diou_bws).",
+        default="cluster_diou_nms",
+        help="Suppression method (cluster_diou_nms, cluster_diou_bws, nms, nms_ioa).",
     )
     parser.add_argument(
         "--affinity-threshold",
@@ -130,13 +130,13 @@ def _parse_args() -> argparse.Namespace:
         "--score-ratio-threshold",
         type=float,
         default=0.85,
-        help="Minimum score ratio to classify a box as a duplicate (cluster_diou_ait).",
+        help="Minimum score ratio to classify a box as a duplicate.",
     )
     parser.add_argument(
         "--duplicate-iou-threshold",
         type=float,
         default=0.5,
-        help="DIoU threshold used to mark strong duplicates (cluster_diou_ait).",
+        help="DIoU threshold used to mark strong duplicates.",
     )
     parser.add_argument(
         "--iou-threshold",

@@ -171,14 +171,15 @@ def main() -> None:
     finally:
         detector.close()
 
-    reconstructed_dir = results_root / "reconstructed" / model_name / f"fold{fold_idx}"
-    dataset = build_prediction_dataset(
+    reconstructed_dir = results_root / "reconstructed" / args.suppression / model_name / f"fold{fold_idx}"
+    dataset, _ = build_prediction_dataset(
         fold_original_to_tiles=selected_original_to_tiles,
         tile_predictions=tile_predictions,
         suppression=settings.suppression,
         original_images=pipeline.original_images,
         base_coco=filtered_coco,
         output_images_dir=reconstructed_dir / "images",
+        source_images_dir=pipeline.train_images_dir,
         create_mosaics=args.create_mosaics,
         orientation_by_image=orientation_by_image,
     )

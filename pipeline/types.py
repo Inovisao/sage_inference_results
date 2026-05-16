@@ -49,7 +49,7 @@ class DetectionRecord:
 class SuppressionParams:
     """Parameters that control the suppression stage."""
 
-    method: str = "cluster_diou_ait"
+    method: str = "cluster_diou_nms"
     affinity_threshold: float = 0.5
     lambda_weight: float = 0.6
     score_ratio_threshold: float = 0.85
@@ -71,6 +71,16 @@ class ModelWeights:
 
     def get(self, fold: int) -> Optional[Path]:
         return self.fold_to_path.get(fold)
+
+
+@dataclass(frozen=True)
+class ReconstructionStats:
+    """Timing and volume information collected while rebuilding original-image predictions."""
+
+    original_image_count: int = 0
+    annotation_count: int = 0
+    suppression_time_s: float = 0.0
+    total_time_s: float = 0.0
 
 
 TileIndex = Mapping[str, TileMetadata]
