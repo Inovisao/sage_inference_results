@@ -11,7 +11,6 @@ from PIL import Image
 
 from supression.bws import bws as suppression_bws
 from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
-from supression.cluster_diou_bws import cluster_diou_bws
 from supression.cluster_diou_nms import cluster_diou_nms
 from supression.nms import nms as suppression_nms
 from supression.nms_ioa import nms_ioa as suppression_nms_ioa
@@ -48,7 +47,6 @@ def _clip_detection(det: DetectionRecord, *, width: int, height: int) -> Detecti
 #   - "nms"
 #   - "nms_ioa"
 #   - "cluster_diou_nms" / "cluster_nms"
-#   - "cluster_diou_bws" / "cluster_bws"
 def _apply_suppression_by_method(
     detections: Sequence[DetectionRecord],
     *,
@@ -159,23 +157,6 @@ def _apply_suppression_by_method(
         if method_key in {"cluster_diou_nms", "cluster_nms"}:
             diou_thresh = float(extra.get("diou_threshold", params.diou_threshold))
             suppressed_boxes, suppressed_scores = cluster_diou_nms(boxes, scores, diou_thresh=diou_thresh)
-            suppressed_boxes = np.atleast_2d(suppressed_boxes)
-            suppressed_scores = np.atleast_1d(suppressed_scores)
-            for box, score in zip(suppressed_boxes, suppressed_scores):
-                clipped = _box_to_detection(box, score)
-                if clipped:
-                    final.append(clipped)
-            continue
-
-        if method_key in {"cluster_diou_bws", "cluster_bws"}:
-            affinity_thresh = float(extra.get("affinity_threshold", params.affinity_threshold))
-            lambda_weight = float(extra.get("lambda_weight", params.lambda_weight))
-            suppressed_boxes, suppressed_scores = cluster_diou_bws(
-                boxes,
-                scores,
-                affinity_thresh=affinity_thresh,
-                lambda_weight=lambda_weight,
-            )
             suppressed_boxes = np.atleast_2d(suppressed_boxes)
             suppressed_scores = np.atleast_1d(suppressed_scores)
             for box, score in zip(suppressed_boxes, suppressed_scores):

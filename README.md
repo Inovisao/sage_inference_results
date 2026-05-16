@@ -30,7 +30,6 @@ pesos/
 ## Supressões suportadas
 
 - `cluster_diou_nms`
-- `cluster_diou_bws`
 - `nms`
 - `nms_ioa`
 
@@ -105,7 +104,7 @@ python run_inference.py --models YOLOV11 --folds fold_1
 Rodar múltiplas supressões:
 
 ```bash
-python run_inference.py --models YOLOV8 --suppressions cluster_diou_nms cluster_diou_bws nms nms_ioa
+python run_inference.py --models YOLOV8 --suppressions cluster_diou_nms nms nms_ioa
 ```
 
 Forçar reprocessamento completo sem reaproveitar saídas antigas:

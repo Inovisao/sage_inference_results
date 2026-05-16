@@ -44,7 +44,6 @@ MODEL_NUM_CLASSES = {
 
 # Supported suppression method names:
 #   - "cluster_diou_nms" / "cluster_nms"
-#   - "cluster_diou_bws" / "cluster_bws"
 #   - "nms"
 #   - "nms_ioa"
 SUPPRESSION_METHOD = "cluster_diou_nms"

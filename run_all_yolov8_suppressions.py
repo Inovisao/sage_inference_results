@@ -37,7 +37,6 @@ COMPLETE_CONFIGS_HEADER = [
 ]
 ALL_SUPPRESSIONS: Sequence[str] = (
     "cluster_diou_nms",
-    "cluster_diou_bws",
     "nms",
     "nms_ioa",
 )
