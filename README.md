@@ -30,7 +30,6 @@ pesos/
 ## Supressões suportadas
 
 - `cluster_diou_nms`
-- `cluster_diou_bws`
 - `nms`
 - `nms_ioa`
 
