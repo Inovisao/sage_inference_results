@@ -3,8 +3,9 @@ from .nms import compute_iou
 
 def bws(boxes, scores, iou_thresh=0.5):
     """
-    Box Weighted Suppression (BWS)
-    Faz média ponderada das caixas com IoU > iou_thresh.
+    Box Weighted Suppression (BWS).
+
+    Apply weighted box averaging for boxes with IoU > iou_thresh.
     """
     indices = np.argsort(scores)[::-1]
     boxes_final = []

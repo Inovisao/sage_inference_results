@@ -107,6 +107,14 @@ Rodar múltiplas supressões:
 python run_inference.py --models YOLOV8 --suppressions cluster_diou_nms nms nms_ioa
 ```
 
+O pipeline carrega por padrão o arquivo editável [configs/inference.yaml](/home/neto/development/sage_inference_results/configs/inference.yaml:1), que expõe os parâmetros atuais de SAHI/modelos e de cada método de supressão mantendo os valores atuais como default.
+
+Para usar outro arquivo de configuração:
+
+```bash
+python run_inference.py --config configs/inference.yaml
+```
+
 Forçar reprocessamento completo sem reaproveitar saídas antigas:
 
 ```bash

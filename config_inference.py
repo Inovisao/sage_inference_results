@@ -1,3 +1,10 @@
+"""Legacy modular pipeline configuration.
+
+The canonical SAHI + Ultralytics entrypoint is `run_inference.py`. This module
+is retained for scripts that still build `PipelineSettings` for the legacy
+`SageInferencePipeline` flow.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

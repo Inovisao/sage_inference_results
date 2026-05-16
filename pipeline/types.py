@@ -7,7 +7,7 @@ from typing import List, Mapping, MutableMapping, Optional, Sequence
 
 @dataclass(frozen=True)
 class OriginalImage:
-    """Metadata for an original (não recortada) image from the base dataset."""
+    """Metadata for an original, uncropped image from the base dataset."""
 
     id: int
     file_name: str

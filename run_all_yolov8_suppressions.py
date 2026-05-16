@@ -1,3 +1,9 @@
+"""Legacy batch runner for historical YOLOV8 suppression experiments.
+
+The canonical active entrypoint is `run_inference.py`. This script is retained
+because previous multi-dataset experiments may depend on its exact wiring.
+"""
+
 from __future__ import annotations
 
 import argparse

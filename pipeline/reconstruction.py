@@ -11,10 +11,8 @@ from PIL import Image
 
 from supression.bws import bws as suppression_bws
 from supression.cluster_diou_AIT import adaptive_cluster_diou_nms
-from supression.cluster_diou_nms import cluster_diou_nms
-from supression.nms import nms as suppression_nms
-from supression.nms_ioa import nms_ioa as suppression_nms_ioa
 
+from .suppression_registry import SUPPRESSION_REGISTRY
 from .types import (
     DetectionRecord,
     OriginalImage,
@@ -116,33 +114,6 @@ def _apply_suppression_by_method(
                     final.append(clipped)
             continue
 
-        if method_key in {"nms"}:
-            iou_thresh = float(extra.get("iou_threshold", params.iou_threshold))
-            suppressed_boxes, suppressed_scores = suppression_nms(boxes, scores, iou_thresh=iou_thresh)
-            suppressed_boxes = np.atleast_2d(suppressed_boxes)
-            suppressed_scores = np.atleast_1d(suppressed_scores)
-            for box, score in zip(suppressed_boxes, suppressed_scores):
-                clipped = _box_to_detection(box, score)
-                if clipped:
-                    final.append(clipped)
-            continue
-
-        if method_key in {"nms_ioa"}:
-            suppressed_boxes, suppressed_scores = suppression_nms_ioa(
-                boxes,
-                scores,
-                ioa_thresh=float(extra.get("ioa_threshold", params.iou_threshold)),
-                conf_threshold=float(extra.get("conf_threshold", 0.4)),
-                sigma=float(extra.get("sigma", 0.5)),
-            )
-            suppressed_boxes = np.atleast_2d(suppressed_boxes)
-            suppressed_scores = np.atleast_1d(suppressed_scores)
-            for box, score in zip(suppressed_boxes, suppressed_scores):
-                clipped = _box_to_detection(box, score)
-                if clipped:
-                    final.append(clipped)
-            continue
-
         if method_key in {"bws"}:
             iou_thresh = float(extra.get("iou_threshold", params.iou_threshold))
             suppressed_boxes, suppressed_scores = suppression_bws(boxes, scores, iou_thresh=iou_thresh)
@@ -154,9 +125,9 @@ def _apply_suppression_by_method(
                     final.append(clipped)
             continue
 
-        if method_key in {"cluster_diou_nms", "cluster_nms"}:
-            diou_thresh = float(extra.get("diou_threshold", params.diou_threshold))
-            suppressed_boxes, suppressed_scores = cluster_diou_nms(boxes, scores, diou_thresh=diou_thresh)
+        suppression_adapter = SUPPRESSION_REGISTRY.get(method_key)
+        if suppression_adapter is not None:
+            suppressed_boxes, suppressed_scores = suppression_adapter(boxes, scores, params, extra)
             suppressed_boxes = np.atleast_2d(suppressed_boxes)
             suppressed_scores = np.atleast_1d(suppressed_scores)
             for box, score in zip(suppressed_boxes, suppressed_scores):

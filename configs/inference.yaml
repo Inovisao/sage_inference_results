@@ -1,0 +1,53 @@
+# Canonical active inference configuration.
+#
+# These values mirror the current code defaults. Edit this file only when you
+# intentionally want to run a different experimental configuration.
+
+sahi:
+  models:
+    YOLOV8:
+      model_type: ultralytics
+      weight_relpath: YOLOV8/train/weights/best.pt
+      confidence: 0.25
+      class_offset: 1
+      slice_height: 640
+      slice_width: 640
+      overlap_height_ratio: 0.1
+      overlap_width_ratio: 0.1
+    YOLOV11:
+      model_type: ultralytics
+      weight_relpath: YOLOV11/train/weights/best.pt
+      confidence: 0.25
+      class_offset: 0
+      slice_height: 640
+      slice_width: 640
+      overlap_height_ratio: 0.1
+      overlap_width_ratio: 0.1
+
+ultralytics:
+  minimum_versions:
+    YOLOV8: [8, 0, 0]
+    YOLOV11: [8, 3, 161]
+
+suppressions:
+  enabled:
+    - cluster_diou_nms
+    - nms
+    - nms_ioa
+  defaults:
+    affinity_threshold: 0.5
+    lambda_weight: 0.6
+    score_ratio_threshold: 0.85
+    duplicate_iou_threshold: 0.5
+    iou_threshold: 0.5
+    diou_threshold: 0.5
+  methods:
+    cluster_diou_nms:
+      diou_threshold: 0.5
+    nms:
+      iou_threshold: 0.5
+    nms_ioa:
+      ioa_threshold: 0.5
+      conf_threshold: 0.4
+      sigma: 0.5
+
